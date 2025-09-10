@@ -10,7 +10,7 @@
  *   3) ADMIN_PASSWORD=coloca-uma-senha node app.js
  *   4) Abrir: http://localhost:3000
  */
-require('dotenv').config();
+
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -23,6 +23,8 @@ const dayjs = require('dayjs');
 
 const app = express();
 const db = new Database('avaliacao_ispt.sqlite');
+
+require('dotenv').config();
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'ispt-admin';
 const upload = multer({ storage: multer.memoryStorage() });
