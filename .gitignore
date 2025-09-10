@@ -1,0 +1,22 @@
+# Node
+node_modules/
+npm-debug.log*
+pnpm-lock.yaml
+yarn.lock
+
+# Ambiente
+.env
+.env.*
+!.env.example
+
+# Build/artifacts
+dist/
+coverage/
+
+# SQLite (mantém só um exemplo vazio)
+*.sqlite
+!example.sqlite
+
+# OS/editor
+.DS_Store
+*.swp
