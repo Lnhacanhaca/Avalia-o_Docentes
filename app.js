@@ -546,48 +546,180 @@ app.get('/admin', requireAuth, (req, res) => {
   res.send(renderPage('Relatório', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
-// ====== IMPORTAÇÃO ======
-app.get('/importar', requireAuth, (req,res)=>{
+// === Helpers de Backup (coloque acima das rotas) ===
+const path = require('path');
+
+const zlib = require('zlib');
+
+function getBackupsDir() {
+  const dir = path.join(process.cwd(), process.env.BACKUPS_DIR || 'backups');
+  try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+function listBackups() {
+  const dir = getBackupsDir();
+  try {
+    return fs.readdirSync(dir)
+      .filter(f => /^[\w.\-]+\.(sqlite|sqlite\.gz)$/.test(f))
+      .map(f => ({ name: f, full: path.join(dir, f), mtime: fs.statSync(path.join(dir, f)).mtime }))
+      .sort((a,b) => b.mtime - a.mtime);
+  } catch { return []; }
+}
+function pruneBackups(maxKeep = Number(process.env.BACKUPS_MAX || 10)) {
+  const files = listBackups().filter(f => f.name.endsWith('.sqlite'));
+  if (files.length <= maxKeep) return 0;
+  const toDelete = files.slice(maxKeep);
+  toDelete.forEach(f => {
+    try {
+      const gz = f.full + '.gz';
+      if (fs.existsSync(gz)) fs.unlinkSync(gz);
+      fs.unlinkSync(f.full);
+    } catch {}
+  });
+  return toDelete.length;
+}
+
+// ====== IMPORTAÇÃO / BACKUP / RESTAURO (UI) ======
+app.get('/importar', requireAuth, (req, res) => {
+  const backups = listBackups();
+  const listHtml = backups.length
+    ? `<ul class="text-sm space-y-1">${backups.map(b => `
+        <li class="flex items-center justify-between border rounded-xl px-3 py-2">
+          <span>${b.name} <span class="text-xs text-slate-500">(${new Date(b.mtime).toLocaleString()})</span></span>
+          <a class="btn btn-primary" href="/backup/download?file=${encodeURIComponent(b.name)}">Descarregar</a>
+        </li>`).join('')}</ul>`
+    : `<p class="text-sm text-slate-600">Sem backups guardados ainda.</p>`;
+
   const html = `
-    <form method="POST" action="/importar" enctype="multipart/form-data" class="space-y-4">
-      <p class="text-sm"><b>Área restrita a administradores.</b><br/>Carregue um Excel com folhas: <b>cursos</b> (name), <b>docentes</b> (name), <b>disciplinas</b> (course, name) e <b>leccionacao</b> (course, discipline, teacher, year, semester, class_group).</p>
-      <label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="wipe_all" /><span>Substituir dados antigos</span></label>
-      <input type="file" name="file" accept=".xlsx" required />
-      <button class="btn btn-primary">Importar</button>
-    </form>`;
-  res.send(renderPage('Importar Listas', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Importar Excel -->
+    <div class="card">
+      <h2 class="text-lg font-semibold mb-2 text-left">Importar Excel</h2>
+      <form method="POST" action="/importar" enctype="multipart/form-data" class="space-y-3">
+        <p class="text-sm"><b>Área restrita a administradores.</b><br/>Carregue um Excel com folhas: <b>cursos</b> (name), <b>docentes</b> (name), <b>disciplinas</b> (course, name) e <b>leccionacao</b> (course, discipline, teacher, year, semester, class_group).</p>
+        <label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="wipe_all" /><span>Substituir dados antigos</span></label>
+        <input type="file" name="file" accept=".xlsx" required />
+        <button class="btn btn-primary">Importar</button>
+      </form>
+    </div>
+
+    <!-- Backup -->
+    <div class="card">
+      <h2 class="text-lg font-semibold mb-2 text-left">Backup da Base de Dados</h2>
+      <form method="POST" action="/backup" class="space-y-3">
+        <p class="text-sm text-slate-600">Cria um ficheiro <code>.sqlite</code> e <code>.sqlite.gz</code> em <code>${process.env.BACKUPS_DIR || 'backups'}</code>.</p>
+        <button class="btn btn-primary">Criar backup agora</button>
+      </form>
+      <form method="POST" action="/backup/cleanup" class="mt-3 space-y-2">
+  <label class="inline-flex items-center gap-2 text-sm">
+    <input type="checkbox" name="wipe_all" />
+    <span>Apagar todos os backups</span>
+  </label>
+  <button class="btn btn-ghost">Limpar backups antigos</button>
+  <p class="text-xs text-slate-500">Sem o visto, mantém apenas os ${Number(process.env.BACKUPS_MAX || 10)} mais recentes.</p>
+</form>
+
+      <hr class="my-3"/>
+      <h3 class="font-medium mb-2">Backups disponíveis</h3>
+      ${listHtml}
+    </div>
+
+    <!-- Restauro -->
+    <div class="card">
+      <h2 class="text-lg font-semibold mb-2 text-left">Restaurar de um Backup</h2>
+      <form method="POST" action="/restore" enctype="multipart/form-data" class="space-y-3">
+        <p class="text-sm text-slate-600">Selecione um ficheiro <code>.sqlite</code> criado pelo sistema (ou descarregado daqui).</p>
+        <input type="file" name="backup" accept=".sqlite" required />
+        <label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="wipe_all" checked /><span>Substituir dados atuais (recomendado)</span></label>
+        <button class="btn btn-primary">Restaurar</button>
+      </form>
+      <p class="mt-2 text-xs text-slate-500">O restauro ocorre em transação, sem reiniciar o servidor.</p>
+    </div>
+  </div>`;
+
+  res.send(renderPage('Importar / Backup / Restauro', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
-app.post('/importar', requireAuth, upload.single('file'), async (req,res)=>{
-  try{
-    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(req.file.buffer);
-    if (req.body.wipe_all === 'on') { const wipe = db.transaction(()=>{ db.exec('DELETE FROM survey_answer;'); db.exec('DELETE FROM survey_response;'); db.exec('DELETE FROM teaching;'); db.exec('DELETE FROM discipline;'); db.exec('DELETE FROM teacher;'); db.exec('DELETE FROM course;'); db.exec('DELETE FROM school_year;'); db.exec('DELETE FROM class_group;'); db.exec('DELETE FROM semester;'); }); wipe(); }
-    const upsertCourse = db.prepare('INSERT OR IGNORE INTO course (name) VALUES (?)');
-    const getCourse = db.prepare('SELECT id FROM course WHERE name=?');
-    const upsertTeacher = db.prepare('INSERT OR IGNORE INTO teacher (name) VALUES (?)');
-    const getTeacher = db.prepare('SELECT id FROM teacher WHERE name=?');
-    const upsertDiscipline = db.prepare('INSERT OR IGNORE INTO discipline (course_id, name) VALUES (?,?)');
-    const getDiscipline = db.prepare('SELECT id FROM discipline WHERE course_id=? AND name=?');
-    const upsertYear = db.prepare('INSERT OR IGNORE INTO school_year (name) VALUES (?)');
-    const getYear = db.prepare('SELECT id FROM school_year WHERE name=?');
-    const upsertSem = db.prepare('INSERT OR IGNORE INTO semester (name) VALUES (?)');
-    const getSem = db.prepare('SELECT id FROM semester WHERE name=?');
-    const upsertClass = db.prepare('INSERT OR IGNORE INTO class_group (name) VALUES (?)');
-    const getClass = db.prepare('SELECT id FROM class_group WHERE name=?');
-    const insTeaching = db.prepare('INSERT OR IGNORE INTO teaching (teacher_id, discipline_id, semester_id, school_year_id, class_group_id) VALUES (?,?,?,?,?)');
+// ====== BACKUP: cria .sqlite e .sqlite.gz com timestamp ======
+app.post('/backup', requireAuth, async (req, res) => {
+    try {
+      const dir = getBackupsDir();
+      const ts = new Date().toISOString().replace(/[-:T.Z]/g,'').slice(0,14); // YYYYMMDDHHmmss
+      const sqlitePath = path.join(dir, `backup_${ts}.sqlite`);
+      await db.backup(sqlitePath); // snapshot consistente
+  
+      // Comprimir para .gz
+      const gzPath = sqlitePath + '.gz';
+      await new Promise((resolve, reject) => {
+        const inp = fs.createReadStream(sqlitePath);
+        const out = fs.createWriteStream(gzPath);
+        const gz = zlib.createGzip({ level: 9 });
+        inp.on('error', reject); out.on('error', reject);
+        out.on('finish', resolve);
+        inp.pipe(gz).pipe(out);
+      });
+  
+      // Retenção automática
+      const removed = pruneBackups();
+  
+      const html = `
+        <p class="mb-3">Backup criado com sucesso:</p>
+        <ul class="text-sm mb-3">
+          <li><code>${path.basename(sqlitePath)}</code></li>
+          <li><code>${path.basename(gzPath)}</code></li>
+        </ul>
+        <div class="flex gap-2 mb-3">
+          <a class="btn btn-primary" href="/backup/download?file=${encodeURIComponent(path.basename(sqlitePath))}">Descarregar .sqlite</a>
+          <a class="btn btn-primary" href="/backup/download?file=${encodeURIComponent(path.basename(gzPath))}">Descarregar .sqlite.gz</a>
+        </div>
+        ${removed ? `<p class="text-xs text-slate-500">Limpeza automática: ${removed} backup(s) removido(s).</p>` : ''}
+        <div class="mt-3"><a class="btn btn-ghost" href="/importar">Voltar</a></div>
+      `;
+      res.send(renderPage('Backup concluído', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
+    } catch (e) {
+      res.send(renderPage('Erro no backup', `<p class="text-red-600">Falhou o backup: ${e.message}</p><a class="underline" href="/importar">Voltar</a>`, '', (req.cookies && req.cookies.ispt_admin==='1')));
+    }
+  });
+  
+  // ====== BACKUP CLEANUP: retenção ou apagar tudo + redirect ======
+app.post('/backup/cleanup', requireAuth, (req, res) => {
+    try {
+      const wipeAll = req.body.wipe_all === 'on';
+      let removed = 0;
+  
+      if (wipeAll) {
+        // Apagar todos os backups (.sqlite e .sqlite.gz)
+        listBackups().forEach(b => {
+          try { fs.unlinkSync(b.full); removed++; } catch {}
+          // se for .sqlite e houver par .gz “órfão” com nome diferente, listBackups já o traz também
+        });
+      } else {
+        // Apenas retenção automática (mantém BACKUPS_MAX mais recentes)
+        removed = pruneBackups();
+      }
+  
+      // Após limpar, volta para /importar para a lista ser recarregada (e poder aparecer vazia)
+      return res.redirect('/importar');
+    } catch (e) {
+      return res.send(renderPage(
+        'Erro na limpeza',
+        `<p class="text-red-600">Falhou a limpeza: ${e.message}</p><a class="underline" href="/importar">Voltar</a>`,
+        '',
+        (req.cookies && req.cookies.ispt_admin==='1')
+      ));
+    }
+  });
+  
 
-    const sheetCursos = wb.getWorksheet('cursos'); if (sheetCursos) sheetCursos.eachRow((row,i)=>{ if(i===1) return; const name=row.getCell(1).value?.toString().trim(); if(name) upsertCourse.run(name); });
-    const sheetDoc = wb.getWorksheet('docentes'); if (sheetDoc) sheetDoc.eachRow((row,i)=>{ if(i===1) return; const name=row.getCell(1).value?.toString().trim(); if(name) upsertTeacher.run(name); });
-    const sheetDisc = wb.getWorksheet('disciplinas'); if (sheetDisc) sheetDisc.eachRow((row,i)=>{ if(i===1) return; const courseName=row.getCell(1).value?.toString().trim(); const discName=row.getCell(2).value?.toString().trim(); if(courseName&&discName){ upsertCourse.run(courseName); const c=getCourse.get(courseName); if(c) upsertDiscipline.run(c.id,discName); } });
-    const sheetTeach = wb.getWorksheet('leccionacao'); if (sheetTeach) sheetTeach.eachRow((row,i)=>{
-      if(i===1) return; const courseName=row.getCell(1).value?.toString().trim(); const discName=row.getCell(2).value?.toString().trim(); const teacherName=row.getCell(3).value?.toString().trim(); const yearName=row.getCell(4).value?.toString().trim(); const semName=row.getCell(5).value?.toString().trim(); const className=row.getCell(6).value?.toString().trim(); if(!courseName||!discName||!teacherName||!yearName||!semName) return; upsertCourse.run(courseName); upsertTeacher.run(teacherName); upsertYear.run(yearName); upsertSem.run(semName); const c=getCourse.get(courseName); if(!c) return; upsertDiscipline.run(c.id,discName); const d=getDiscipline.get(c.id,discName); const t=getTeacher.get(teacherName); const y=getYear.get(yearName); const s=getSem.get(semName); let cg=null; if(className){ upsertClass.run(className); cg=getClass.get(className);} if(d&&t&&y&&s) insTeaching.run(t.id,d.id,s.id,y.id,cg?cg.id:null);
-    });
-
-    res.send(renderPage('Importação concluída', '<p>Importação finalizada.</p>', '', (req.cookies && req.cookies.ispt_admin==='1')));
-  } catch(e){
-    res.send(renderPage('Erro na importação', `<p class="text-red-600">Falhou a importação: ${e.message}</p>`, '', (req.cookies && req.cookies.ispt_admin==='1')));
-  }
-});
+  // ====== DOWNLOAD de backup (.sqlite ou .sqlite.gz) ======
+  app.get('/backup/download', requireAuth, (req, res) => {
+    const file = String(req.query.file || '');
+    if (!/^[\w.\-]+$/.test(file)) return res.status(400).send('Nome de ficheiro inválido.');
+    const full = path.join(getBackupsDir(), file);
+    if (!fs.existsSync(full)) return res.status(404).send('Ficheiro não encontrado.');
+    res.download(full, file);
+  });
+  
 
 // ====== EXPORT: EXCEL ======
 app.get('/export/excel', requireAuth, async (req, res) => {
@@ -706,7 +838,7 @@ app.get('/export/pdf', requireAuth, (req, res) => {
   
     // ===== PDF =====
     const PDFDocument = require('pdfkit');
-    const fs = require('fs');
+    
     const dayjs = require('dayjs');
   
     const LOGO_PRIMARY = process.env.LOGO_PRIMARY || '#0f172a';
