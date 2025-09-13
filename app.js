@@ -177,6 +177,7 @@ seedOnce();
 
 // ====== HELPERS ======
 function renderPage(title, content, extraHead = '', isAdmin = false) {
+    const ANON = (typeof ANON_THRESHOLD !== 'undefined' ? ANON_THRESHOLD : 5);
     return `<!doctype html>
   <html lang="pt" class="h-full">
   <head>
@@ -218,6 +219,9 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
   
       /* Avatar */
       .avatar{width:28px;height:28px;border-radius:9999px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+  
+      /* Modal helpers */
+      .modal-open { overflow:hidden }
     </style>
     ${extraHead}
   </head>
@@ -322,7 +326,26 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
       <footer class="mt-8 text-xs text-slate-500 text-center">ISPT · ${new Date().getFullYear()}</footer>
     </div>
   
-    <!-- Nav / UI logic -->
+    <!-- Consentimento / Anonimato Modal -->
+    <div id="consentOverlay" class="fixed inset-0 bg-black/40 hidden items-center justify-center p-4 z-50">
+      <div class="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-200">
+        <div class="p-5 border-b border-slate-100">
+          <h2 class="text-lg font-semibold text-slate-900">Aviso de Anonimato e Consentimento</h2>
+        </div>
+        <div class="p-5 space-y-3 text-slate-700 text-sm leading-relaxed">
+          <p><b>Este inquérito é anónimo</b> e destina-se exclusivamente à melhoria pedagógica.</p>
+          <p>Não recolhemos qualquer identificação pessoal. As respostas são <b>agregadas</b> e os resultados apenas são apresentados quando existem <b>pelo menos ${ANON} respostas (n≥${ANON})</b> para proteger o anonimato.</p>
+          <p>O comentário é opcional. Evite incluir nomes ou elementos que identifiquem pessoas.</p>
+          <p>Ao prosseguir, declara que compreende e consente a recolha e tratamento dos dados nos termos aqui descritos.</p>
+        </div>
+        <div class="px-5 pb-5 pt-3 flex flex-wrap gap-2 justify-end">
+          <button id="consentDecline" class="btn btn-ghost">Cancelar</button>
+          <button id="consentAccept" class="btn btn-primary">Aceito e quero continuar</button>
+        </div>
+      </div>
+    </div>
+  
+    <!-- Nav / UI + Consent + Notificações -->
     <script>
       (function(){
         const header = document.getElementById('siteHeader');
@@ -384,7 +407,7 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
         backdrop?.addEventListener('click', ()=> setOpen(false));
         document.addEventListener('keydown', (e)=> { if(e.key === 'Escape') setOpen(false); });
   
-        // Active link (desktop & mobile)
+        // Active link
         const path = location.pathname.replace(/\\/$/, '');
         document.querySelectorAll('nav a').forEach(a => {
           const href = a.getAttribute('href')?.replace(/\\/$/, '') || '';
@@ -399,21 +422,90 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
           $avatar.textContent = initials;
         }
   
-        // Notificações: API simples para atualizares onde quiseres
+        // Notificações – fetch automático
         const $badge = document.getElementById('notifBadge');
-        window.setNotificationCount = function(n){
+        function setNotificationCount(n){
           const num = Number(n) || 0;
           if (!$badge) return;
           if (num <= 0) { $badge.classList.add('hidden'); $badge.textContent = '0'; }
           else { $badge.classList.remove('hidden'); $badge.textContent = String(num); }
+        }
+        async function pollNotif(){
+          try{
+            const r = await fetch('/api/notifications', { cache:'no-store' });
+            if(!r.ok) throw 0;
+            const j = await r.json();
+            setNotificationCount(j.count || 0);
+          }catch(_){}
+        }
+        setNotificationCount(0);
+        pollNotif();
+        setInterval(pollNotif, 30000); // a cada 30s
+  
+        // ===== Consentimento / Anonimato =====
+        const PATH = location.pathname;
+        const isSurveyArea = PATH === '/' || PATH === '/inquerito'; // mostra apenas no inquérito
+        const getCookie = (k) => document.cookie.split('; ').find(x=>x.startsWith(k+'='))?.split('=')[1];
+        const setCookieDays = (k,v,days=180) => {
+          const d = new Date(); d.setTime(d.getTime() + (days*24*60*60*1000));
+          document.cookie = k + '=' + v + '; expires=' + d.toUTCString() + '; path=/; SameSite=Lax';
         };
-        // inicializa a 0
-        window.setNotificationCount(0);
+  
+        const overlay = document.getElementById('consentOverlay');
+        const btnAccept = document.getElementById('consentAccept');
+        const btnDecline = document.getElementById('consentDecline');
+  
+        function openModal(){
+          overlay?.classList.remove('hidden');
+          overlay?.classList.add('flex');
+          document.documentElement.classList.add('modal-open');
+        }
+        function closeModal(){
+          overlay?.classList.add('hidden');
+          overlay?.classList.remove('flex');
+          document.documentElement.classList.remove('modal-open');
+        }
+  
+        // Mostrar modal se necessário
+        if (isSurveyArea && getCookie('ispt_consent') !== '1') {
+          openModal();
+        }
+  
+        // Aceitar
+        btnAccept?.addEventListener('click', () => {
+          setCookieDays('ispt_consent', '1', 180);
+          closeModal();
+        });
+  
+        // Cancelar -> volta para home (se já estiver na home, só fecha)
+        btnDecline?.addEventListener('click', () => {
+          if (PATH !== '/') location.href = '/';
+          else closeModal();
+        });
+  
+        // Bloquear submissão do formulário do inquérito sem consentimento
+        document.addEventListener('submit', (e) => {
+          const form = e.target;
+          if (!form || !(form instanceof HTMLFormElement)) return;
+          // só bloquear no formulário de inquérito (tem action /inquerito ou /submit)
+          const action = (form.getAttribute('action')||'');
+          const isSurveyForm = action.includes('/inquerito') || action.includes('/submit');
+          if (isSurveyForm && getCookie('ispt_consent') !== '1') {
+            e.preventDefault();
+            openModal();
+          }
+        });
+  
+        // Se o utilizador tentar navegar para /inquerito de forma direta sem consentir
+        if (PATH === '/inquerito' && getCookie('ispt_consent') !== '1') {
+          openModal();
+        }
       })();
     </script>
   </body>
   </html>`;
   }
+  
   
   
 
