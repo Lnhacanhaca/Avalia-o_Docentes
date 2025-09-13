@@ -780,6 +780,8 @@ app.get('/api/disciplinas', requireAuth, (req, res) => {
   });
 
   // ====== RELATÓRIO (UI) – Curso -> Disciplina -> Docente (via APIs) ======
+
+  // ====== RELATÓRIO (UI) – Curso -> Disciplina -> Docente (via APIs) ======
 app.get('/admin', requireAuth, (req, res) => {
     const courses   = db.prepare('SELECT id, name FROM course ORDER BY name').all();
     const semesters = db.prepare('SELECT id, name FROM semester ORDER BY id').all();
@@ -840,9 +842,22 @@ app.get('/admin', requireAuth, (req, res) => {
           <div style="height:220px"><canvas id="chartAreas"></canvas></div>
         </div>
       </div>
+  
       <div class="mt-6">
         <h2 class="text-lg font-semibold mb-2 text-left">Comentários (qualitativo)</h2>
+        <div class="flex items-center gap-2 mb-2">
+          <button id="btnKW" class="btn btn-ghost">Palavras-chave</button>
+          <button id="btnFull" class="btn btn-ghost">Comentários completos</button>
+        </div>
+        <div id="kwWrap" class="hidden"></div>
         <ul id="comments" class="space-y-2"></ul>
+        <div id="pager" class="mt-2 flex items-center gap-2"></div>
+        <p class="text-xs text-slate-500 mt-3">
+          Comentários são opcionais e exibidos sem qualquer dado identificativo.
+          Conteúdos com dados pessoais, ofensas graves ou acusações específicas podem ser moderados/anonimizados/removidos pela equipa administradora.
+          Como os dados são anónimos, não é possível identificar e eliminar respostas individuais; no entanto,
+          comentários podem ser removidos se contiverem dados pessoais ou conteúdo impróprio, mediante pedido fundamentado.
+        </p>
       </div>
   
       <script>
@@ -858,17 +873,12 @@ app.get('/admin', requireAuth, (req, res) => {
             el.classList.toggle('opacity-50', dis);
             el.classList.toggle('cursor-not-allowed', dis);
           };
-          const resetToSelect = (el) => {
-            el.innerHTML = '<option value="">— seleccione —</option>';
-          };
+          const resetToSelect = (el) => { el.innerHTML = '<option value="">— seleccione —</option>'; };
   
           async function loadDisciplinas(courseId){
-            resetToSelect(selDisc);
-            setDisabled(selDisc, true);
-            resetToSelect(selTeach);
-            setDisabled(selTeach, true);
+            resetToSelect(selDisc); setDisabled(selDisc, true);
+            resetToSelect(selTeach); setDisabled(selTeach, true);
             if(!courseId) return;
-  
             const r = await fetch('/api/disciplinas?course_id=' + encodeURIComponent(courseId));
             const data = await r.json();
             const items = data.items || [];
@@ -879,10 +889,8 @@ app.get('/admin', requireAuth, (req, res) => {
           }
   
           async function loadDocentes(discId){
-            resetToSelect(selTeach);
-            setDisabled(selTeach, true);
+            resetToSelect(selTeach); setDisabled(selTeach, true);
             if(!discId) return;
-  
             const r = await fetch('/api/docentes?discipline_id=' + encodeURIComponent(discId));
             const data = await r.json();
             const items = (data.items || []);
@@ -897,52 +905,124 @@ app.get('/admin', requireAuth, (req, res) => {
             loadDisciplinas(cid);
             resetToSelect(selTeach); setDisabled(selTeach, true);
           });
+          selDisc.addEventListener('change', e => loadDocentes(e.target.value));
   
-          selDisc.addEventListener('change', e => {
-            const did = e.target.value;
-            loadDocentes(did);
-          });
-  
-          // Inicialização (se o navegador preencheu algo)
           if (selCourse.value) loadDisciplinas(selCourse.value).then(()=> {
             if (selDisc.value) loadDocentes(selDisc.value);
           });
         })();
   
-        // ===== Dashboard existente =====
+        // ===== Utils & estado =====
         const round2 = x => Math.round(Number(x || 0) * 100) / 100;
-        function params(){ const fd=new FormData(document.getElementById('filtros')); const p=new URLSearchParams(); for(const [k,v] of fd.entries()){ if(v) p.append(k,v);} return p.toString(); }
+        function params(){
+          const fd=new FormData(document.getElementById('filtros'));
+          const p=new URLSearchParams();
+          for(const [k,v] of fd.entries()){ if(v) p.append(k,v); }
+          return p.toString();
+        }
         let chartPerguntas, chartAreas;
   
         function renderNoData(ctx, msg='Sem dados para os filtros seleccionados.'){
           const c = ctx.canvas; const g = c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
           g.font = '12px sans-serif'; g.fillStyle = '#64748b'; g.textAlign = 'center'; g.fillText(msg, c.width/2, c.height/2);
         }
-        async function load(){
-          const res = await fetch('/api/stats?' + params()); const data = await res.json();
-          const map = new Map(data.rows.map(r=>[r.question_id, Number(r.avg_val)]));
-          const labels = data.questions.map(q=>q.code);
-          const values = data.questions.map(q=> { const v = map.get(q.id); return Number.isFinite(v) ? round2(v) : null; });
   
-          const ctx1 = document.getElementById('chartPerguntas').getContext('2d'); if(chartPerguntas) chartPerguntas.destroy();
-          if(values.every(v => v === null)) renderNoData(ctx1); else {
-            chartPerguntas = new Chart(ctx1,{ type:'bar', data:{ labels, datasets:[{label:'Média (0–2)', data:values.map(v=>v ?? 0), borderWidth:1}] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ suggestedMin:0, suggestedMax:2, ticks:{ stepSize:0.5 } } } } });
-          }
+        // ===== Comentários: palavras-chave e paginação =====
+        let modeKW = true;
+        let page = 1;
+        const PAGE_SIZE = 20;
+        const STOP = new Set(['a','o','os','as','de','da','do','das','dos','e','é','em','no','na','nos','nas','um','uma','que','com','por','para','ao','à','às','aos','se','sem','são','ser','foi','era','eram','já','sua','seu','suas','seus','mais','menos','muito','muita','muitos','muitas','também','como']);
   
-          const areaAgg = {}; data.questions.forEach((q,i)=>{ const v=values[i]; if(v==null) return; (areaAgg[q.area] ||= {sum:0,n:0}); areaAgg[q.area].sum+=v; areaAgg[q.area].n++; });
-          const areaLabels = Object.keys(areaAgg); const areaVals = areaLabels.map(a=> round2(areaAgg[a].sum/areaAgg[a].n));
-          const ctx2 = document.getElementById('chartAreas').getContext('2d'); if(chartAreas) chartAreas.destroy();
-          if(!areaVals.length) renderNoData(ctx2); else {
-            chartAreas = new Chart(ctx2,{ type:'radar', data:{ labels:areaLabels, datasets:[{label:'Média por Área (0–2)', data:areaVals}] }, options:{ responsive:true, maintainAspectRatio:false, scales:{ r:{ suggestedMin:0, suggestedMax:2 } } } });
-          }
-  
-          const ul = document.getElementById('comments'); ul.innerHTML='';
-          if(!data.comments || !data.comments.length){ ul.innerHTML='<li class="text-slate-500">Sem dados para os filtros seleccionados.</li>'; }
-          else { data.comments.forEach(c=>{ const li=document.createElement('li'); li.className='p-3 rounded-xl border'; const d=new Date(c.submitted_at).toLocaleString(); li.innerHTML='<div class="text-sm text-slate-500">'+d+'</div><div>'+(c.comment||'')+'</div>'; ul.appendChild(li); }); }
+        function extractKeywords(comments, topK=30){
+          const freq = new Map();
+          (comments||[]).forEach(c=>{
+            const txt = String(c.comment||'').toLowerCase()
+              .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/ig,' ')
+              .replace(/https?:\\/\\/\\S+/g,' ')
+              .replace(/[@#]\\w+/g,' ')
+              .replace(/[^\\p{L}\\p{N}\\s]/gu,' ');
+            txt.split(/\\s+/).forEach(w=>{
+              if(!w || w.length<3) return;
+              if(STOP.has(w)) return;
+              freq.set(w, (freq.get(w)||0)+1);
+            });
+          });
+          return [...freq.entries()].sort((a,b)=> b[1]-a[1]).slice(0, topK).map(([term,count])=>({term,count}));
         }
-        document.getElementById('aplicar').addEventListener('click', load); load();
-        document.getElementById('exportExcel').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/excel?'+params(); });
-        document.getElementById('exportPDF').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/pdf?'+params(); });
+  
+        async function renderKeywordsFrom(data){
+          const wrap = document.getElementById('kwWrap');
+          const ul = document.getElementById('comments');
+          const pager = document.getElementById('pager');
+          ul.innerHTML = ''; pager.innerHTML = ''; wrap.classList.remove('hidden');
+          const kws = extractKeywords(data.comments, 40);
+          if (!kws.length){
+            wrap.innerHTML = '<div class="text-slate-500 text-sm">Sem palavras-chave.</div>';
+            return;
+          }
+          wrap.innerHTML = '<div class="flex flex-wrap gap-2">' + kws.map(k =>
+            '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border bg-white"><span class="text-sm">'+k.term+'</span><span class="text-[10px] px-1 rounded bg-slate-900 text-white">'+k.count+'</span></span>'
+          ).join('') + '</div>';
+        }
+  
+        function renderCommentsList(data){
+          const wrap = document.getElementById('kwWrap');
+          const ul = document.getElementById('comments');
+          const pager = document.getElementById('pager');
+          wrap.classList.add('hidden'); ul.innerHTML=''; pager.innerHTML='';
+          const items = data.comments || [];
+          if (!items.length){
+            ul.innerHTML = '<li class="text-slate-500">Sem comentários.</li>';
+            return;
+          }
+          const total = items.length;
+          const maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+          page = Math.min(page, maxPage);
+          const slice = items.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
+          slice.forEach(c => {
+            const li = document.createElement('li');
+            li.className = 'p-3 rounded-xl border';
+            const d = new Date(c.submitted_at).toLocaleString();
+            li.innerHTML = '<div class="text-sm text-slate-500">'+d+'</div><div>'+(c.comment||'')+'</div>';
+            ul.appendChild(li);
+          });
+          if (maxPage > 1){
+            pager.innerHTML = '<span class="text-sm">Página '+page+' / '+maxPage+'</span>';
+          }
+        }
+  
+        // ===== Carregar estatísticas =====
+        async function load(){
+          const res = await fetch('/api/stats?' + params());
+          const data = await res.json();
+          if (data.insufficient){
+            const ctx1 = document.getElementById('chartPerguntas').getContext('2d');
+            const ctx2 = document.getElementById('chartAreas').getContext('2d');
+            const msg = 'Amostra insuficiente (n='+data.n+' < '+data.threshold+').';
+            renderNoData(ctx1, msg); renderNoData(ctx2, msg);
+            document.getElementById('comments').innerHTML = '<li class="text-slate-500">'+msg+'</li>';
+            return;
+          }
+          const map = new Map((data.rows||[]).map(r=>[r.question_id, Number(r.avg_val)]));
+          const labels = (data.questions||[]).map(q=>q.code);
+          const values = (data.questions||[]).map(q=>{const v=map.get(q.id);return Number.isFinite(v)?round2(v):null;});
+          const ctx1 = document.getElementById('chartPerguntas').getContext('2d');
+          if(chartPerguntas) chartPerguntas.destroy();
+          if(values.every(v => v===null)) renderNoData(ctx1);
+          else chartPerguntas = new Chart(ctx1,{type:'bar',data:{labels,datasets:[{label:'Média (0–2)',data:values.map(v=>v??0)}]},options:{responsive:true,maintainAspectRatio:false}});
+          const areaAgg={}; (data.questions||[]).forEach((q,i)=>{const v=values[i];if(v==null)return;(areaAgg[q.area]||={sum:0,n:0}).sum+=v;(areaAgg[q.area].n++);});
+          const areaLabels=Object.keys(areaAgg), areaVals=areaLabels.map(a=>round2(areaAgg[a].sum/areaAgg[a].n));
+          const ctx2=document.getElementById('chartAreas').getContext('2d');
+          if(chartAreas) chartAreas.destroy();
+          if(!areaVals.length) renderNoData(ctx2); else chartAreas=new Chart(ctx2,{type:'radar',data:{labels:areaLabels,datasets:[{label:'Média por Área (0–2)',data:areaVals}]}});
+          const totalC=(data.comments||[]).length;
+          modeKW=totalC>20;
+          if(modeKW) renderKeywordsFrom(data); else renderCommentsList(data);
+        }
+        document.getElementById('aplicar').addEventListener('click', load);
+        load();
+        document.getElementById('exportExcel').addEventListener('click',e=>{e.preventDefault();window.location='/export/excel?'+params();});
+        document.getElementById('exportPDF').addEventListener('click',e=>{e.preventDefault();window.location='/export/pdf?'+params();});
       </script>`;
   
     res.send(renderPage('Relatório', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
