@@ -194,118 +194,227 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
       .kpi h3{font-size:.875rem;color:#64748b;text-align:left}
       .kpi .v{font-size:1.75rem;font-weight:800;color:#0f172a;letter-spacing:-.01em}
       canvas{max-height:260px !important}
-      /* Modal helpers */
-      .modal-open { overflow:hidden }
+  
+      /* Navbar desktop */
+      .nav-link{position:relative;border-radius:9999px;padding:0.375rem 0.6rem}
+      .nav-link:hover{background:rgba(15,23,42,.06)}
+      .nav-link.active{color:#0f172a;background:rgba(15,23,42,.08)}
+  
+      /* Dropdown */
+      .menu{min-width:220px}
+      .menu a{display:block;padding:.5rem .75rem;border-radius:.5rem}
+      .menu a:hover{background:#f1f5f9}
+  
+      /* Mobile drawer animations */
+      @media (prefers-reduced-motion:no-preference){
+        .drawer{transform:translateY(-6px);opacity:0;transition:transform .18s ease, opacity .18s ease}
+        .drawer.open{transform:translateY(0);opacity:1}
+        .backdrop{opacity:0;transition:opacity .18s ease}
+        .backdrop.open{opacity:1}
+      }
+  
+      /* Header shadow on scroll */
+      .header-shadow{box-shadow:0 10px 30px -12px rgba(0,0,0,.15)}
+  
+      /* Avatar */
+      .avatar{width:28px;height:28px;border-radius:9999px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
     </style>
     ${extraHead}
   </head>
   <body class="min-h-full bg-slate-50 text-slate-900">
     <div class="max-w-6xl mx-auto p-4 sm:p-8">
-      <header class="mb-6 sticky top-0 bg-slate-50/80 backdrop-blur z-30">
-        <div class="flex items-center justify-between py-2">
-          <a href="/" class="flex items-center gap-2">
-            <img src="/logo.png" alt="Logo" class="w-9 h-9 object-contain" onerror="this.style.display='none'"/>
-            <span class="font-semibold">ISPT · Avaliação Docente</span>
+      <!-- HEADER -->
+      <header id="siteHeader" class="sticky top-0 bg-slate-50/80 backdrop-blur z-30 border-b border-slate-200/60 transition-shadow">
+        <div class="flex items-center justify-between py-3">
+          <!-- Brand -->
+          <a href="/" class="flex items-center gap-3">
+            <img src="/logo.png" alt="Logo" class="w-10 h-10 object-contain" onerror="this.style.display='none'"/>
+            <div class="leading-tight">
+              <div class="font-semibold tracking-tight">ISPT · Avaliação Docente</div>
+              <div class="text-xs text-slate-500 hidden sm:block">Sistema Web de Inquérito a Estudantes</div>
+            </div>
           </a>
-          <nav class="text-sm flex gap-3 flex-wrap">
-            <a class="underline" href="/">Inquérito</a>
-            ${isAdmin ? '<a class="underline" href="/admin">Relatório</a>' : ''}
-            ${isAdmin ? '<a class="underline" href="/dashboard">Dashboard</a>' : ''}
-            ${isAdmin ? '<a class="underline" href="/importar">Importar</a>' : ''}
-            ${isAdmin ? '<a class="underline" href="/logout">Sair</a>' : '<a class="underline" href="/login">Entrar</a>'}
+  
+          <!-- Right cluster (DESKTOP): nav + bell + avatar + sair -->
+          <div class="hidden md:flex items-center gap-2">
+            <!-- Desktop nav COLADO ao sino -->
+            <nav class="flex items-center gap-1">
+              <a href="/" class="nav-link text-sm">Inquérito</a>
+              ${isAdmin ? `
+              <div class="relative">
+                <button id="btnAdmin" class="nav-link text-sm inline-flex items-center gap-1" aria-haspopup="true" aria-expanded="false">
+                  Administração
+                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                </button>
+                <div id="menuAdmin" class="menu absolute right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-2xl p-2 hidden">
+                  <a href="/admin">Relatório</a>
+                  <a href="/dashboard">Dashboard</a>
+                  <a href="/importar">Importar / Backup</a>
+                </div>
+              </div>` : ''}
+              ${isAdmin ? '' : '<a href="/login" class="nav-link text-sm">Entrar</a>'}
+            </nav>
+  
+            <!-- Notifications (logo imediatamente à direita do menu) -->
+            <a href="/admin" class="relative inline-flex items-center justify-center w-10 h-10 rounded-xl border border-slate-300 bg-white" title="Notificações">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-width="2" d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0v1a3 3 0 1 1-6 0v-1m6 0H9"/>
+              </svg>
+              <span id="notifBadge" class="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center bg-rose-600 text-white hidden">0</span>
+            </a>
+  
+            <!-- Session badge + avatar -->
+            <div class="flex items-center gap-2 px-2 py-1 rounded-lg border ${isAdmin ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-600'}">
+              <span class="avatar ${isAdmin ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'}" id="userAvatar" data-name="${isAdmin ? 'Admin' : 'Convidado'}"></span>
+              <span class="text-xs">${isAdmin ? 'Admin' : 'Convidado'}</span>
+            </div>
+  
+            ${isAdmin ? '<a class="nav-link text-sm" href="/logout">Sair</a>' : ''}
+          </div>
+  
+          <!-- Mobile trigger -->
+          <button id="navToggle" class="md:hidden inline-flex items-center justify-center w-10 h-10 rounded-xl border border-slate-300 bg-white"
+                  aria-label="Abrir menu" aria-haspopup="true" aria-expanded="false">
+            <!-- hamburger -->
+            <svg id="iconOpen" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/>
+            </svg>
+            <!-- close -->
+            <svg id="iconClose" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6l-12 12"/>
+            </svg>
+          </button>
+        </div>
+  
+        <!-- Mobile drawer -->
+        <div id="navBackdrop" class="backdrop fixed inset-0 bg-black/40 opacity-0 hidden z-40"></div>
+        <div id="navDrawer" class="drawer md:hidden absolute left-0 right-0 px-4 pb-4 z-50 hidden">
+          <div class="bg-white border border-slate-200 rounded-2xl shadow-2xl">
+            <nav class="p-2">
+              <a href="/" class="block px-3 py-2 rounded-lg text-sm hover:bg-slate-100">Inquérito</a>
+              ${isAdmin ? `
+              <div class="px-3 py-1 text-xs uppercase tracking-wide text-slate-400">Administração</div>
+              <a href="/admin" class="block px-3 py-2 rounded-lg text-sm hover:bg-slate-100">Relatório</a>
+              <a href="/dashboard" class="block px-3 py-2 rounded-lg text-sm hover:bg-slate-100">Dashboard</a>
+              <a href="/importar" class="block px-3 py-2 rounded-lg text-sm hover:bg-slate-100">Importar / Backup</a>
+              <a href="/logout" class="block px-3 py-2 rounded-lg text-sm hover:bg-slate-100">Sair</a>
+              ` : '<a href="/login" class="block px-3 py-2 rounded-lg text-sm hover:bg-slate-100">Entrar</a>'}
+            </nav>
+          </div>
+        </div>
+  
+        <!-- BREADCRUMB -->
+        <div class="px-1 py-2 text-sm text-slate-500">
+          <nav class="flex items-center gap-1">
+            <a href="/" class="hover:underline">Início</a>
+            <span>›</span>
+            <span class="text-slate-700">${title}</span>
           </nav>
         </div>
       </header>
-      <main class="card">
+  
+      <!-- MAIN -->
+      <main class="card mt-4">
         <h1 class="text-2xl sm:text-3xl font-bold mb-4 text-left">${title}</h1>
         ${content}
       </main>
+  
       <footer class="mt-8 text-xs text-slate-500 text-center">ISPT · ${new Date().getFullYear()}</footer>
     </div>
   
-    <!-- Consentimento / Anonimato Modal -->
-    <div id="consentOverlay" class="fixed inset-0 bg-black/40 hidden items-center justify-center p-4 z-50">
-      <div class="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-200">
-        <div class="p-5 border-b border-slate-100">
-          <h2 class="text-lg font-semibold text-slate-900">Aviso de Anonimato e Consentimento</h2>
-        </div>
-        <div class="p-5 space-y-3 text-slate-700 text-sm leading-relaxed">
-          <p><b>Este inquérito é anónimo</b> e destina-se exclusivamente à melhoria pedagógica.</p>
-          <p>Não recolhemos qualquer identificação pessoal. As respostas são <b>agregadas</b> e os resultados apenas são apresentados quando existem <b>pelo menos 5 respostas (n≥5)</b> para proteger o anonimato.</p>
-          <p>O comentário é opcional. Evite incluir nomes ou elementos que identifiquem pessoas.</p>
-          <p>Ao prosseguir, declara que compreende e consente a recolha e tratamento dos dados nos termos aqui descritos.</p>
-        </div>
-        <div class="px-5 pb-5 pt-3 flex flex-wrap gap-2 justify-end">
-          <button id="consentDecline" class="btn btn-ghost">Cancelar</button>
-          <button id="consentAccept" class="btn btn-primary">Aceito e quero continuar</button>
-        </div>
-      </div>
-    </div>
-  
+    <!-- Nav / UI logic -->
     <script>
       (function(){
-        const PATH = location.pathname;
-        const isSurveyArea = PATH === '/' || PATH === '/inquerito'; // mostra apenas no inquérito
-        const getCookie = (k) => document.cookie.split('; ').find(x=>x.startsWith(k+'='))?.split('=')[1];
-        const setCookieDays = (k,v,days=180) => {
-          const d = new Date(); d.setTime(d.getTime() + (days*24*60*60*1000));
-          document.cookie = k + '=' + v + '; expires=' + d.toUTCString() + '; path=/; SameSite=Lax';
+        const header = document.getElementById('siteHeader');
+  
+        // sombra ao rolar
+        const onScroll = () => {
+          if (window.scrollY > 4) header.classList.add('header-shadow');
+          else header.classList.remove('header-shadow');
         };
+        onScroll();
+        window.addEventListener('scroll', onScroll, { passive: true });
   
-        const overlay = document.getElementById('consentOverlay');
-        const btnAccept = document.getElementById('consentAccept');
-        const btnDecline = document.getElementById('consentDecline');
+        // Desktop dropdown
+        const btnAdmin = document.getElementById('btnAdmin');
+        const menuAdmin = document.getElementById('menuAdmin');
+        if (btnAdmin && menuAdmin) {
+          const open = (v) => {
+            btnAdmin.setAttribute('aria-expanded', v ? 'true' : 'false');
+            menuAdmin.classList.toggle('hidden', !v);
+          };
+          let inside = false;
   
-        function openModal(){
-          overlay.classList.remove('hidden');
-          overlay.classList.add('flex');
-          document.documentElement.classList.add('modal-open');
+          btnAdmin.addEventListener('click', (e)=> {
+            e.stopPropagation();
+            open(menuAdmin.classList.contains('hidden'));
+          });
+          btnAdmin.addEventListener('mouseenter', ()=> { open(true); inside = true; });
+          btnAdmin.addEventListener('mouseleave', ()=> { inside = false; setTimeout(()=> { if(!inside) open(false); }, 120); });
+          menuAdmin.addEventListener('mouseenter', ()=> { inside = true; open(true); });
+          menuAdmin.addEventListener('mouseleave', ()=> { inside = false; setTimeout(()=> { if(!inside) open(false); }, 120); });
+          document.addEventListener('click', (e)=> {
+            if (!menuAdmin.contains(e.target) && e.target !== btnAdmin) open(false);
+          });
+          document.addEventListener('keydown', (e)=> { if(e.key === 'Escape') open(false); });
         }
-        function closeModal(){
-          overlay.classList.add('hidden');
-          overlay.classList.remove('flex');
-          document.documentElement.classList.remove('modal-open');
-        }
   
-        // Mostrar modal se necessário
-        if (isSurveyArea && getCookie('ispt_consent') !== '1') {
-          openModal();
-        }
+        // Mobile drawer
+        const toggle = document.getElementById('navToggle');
+        const drawer = document.getElementById('navDrawer');
+        const backdrop = document.getElementById('navBackdrop');
+        const iconOpen = document.getElementById('iconOpen');
+        const iconClose = document.getElementById('iconClose');
   
-        // Aceitar
-        btnAccept?.addEventListener('click', () => {
-          setCookieDays('ispt_consent', '1', 180);
-          closeModal();
-        });
-  
-        // Cancelar -> volta para home (se já estiver na home, só fecha)
-        btnDecline?.addEventListener('click', () => {
-          if (PATH !== '/') location.href = '/';
-          else closeModal();
-        });
-  
-        // Bloquear submissão do formulário do inquérito sem consentimento
-        document.addEventListener('submit', (e) => {
-          const form = e.target;
-          if (!form || !(form instanceof HTMLFormElement)) return;
-          // só bloquear no formulário de inquérito (tem action /inquerito ou /submit)
-          const action = (form.getAttribute('action')||'');
-          const isSurveyForm = action.includes('/inquerito') || action.includes('/submit');
-          if (isSurveyForm && getCookie('ispt_consent') !== '1') {
-            e.preventDefault();
-            openModal();
+        function setOpen(isOpen){
+          toggle?.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+          drawer?.classList.toggle('hidden', !isOpen);
+          backdrop?.classList.toggle('hidden', !isOpen);
+          drawer?.classList.toggle('open', isOpen);
+          backdrop?.classList.toggle('open', isOpen);
+          iconOpen?.classList.toggle('hidden', isOpen);
+          iconClose?.classList.toggle('hidden', !isOpen);
+          if(isOpen){
+            const link = drawer.querySelector('a');
+            setTimeout(()=> link && link.focus(), 10);
           }
+        }
+  
+        toggle?.addEventListener('click', ()=> setOpen(toggle.getAttribute('aria-expanded') !== 'true'));
+        backdrop?.addEventListener('click', ()=> setOpen(false));
+        document.addEventListener('keydown', (e)=> { if(e.key === 'Escape') setOpen(false); });
+  
+        // Active link (desktop & mobile)
+        const path = location.pathname.replace(/\\/$/, '');
+        document.querySelectorAll('nav a').forEach(a => {
+          const href = a.getAttribute('href')?.replace(/\\/$/, '') || '';
+          if (href && href === path) a.classList.add('active');
         });
   
-        // Se o utilizador tentar navegar para /inquerito de forma direta sem consentir
-        if (PATH === '/inquerito' && getCookie('ispt_consent') !== '1') {
-          openModal();
+        // Avatar iniciais
+        const $avatar = document.getElementById('userAvatar');
+        if ($avatar) {
+          const name = ($avatar.dataset.name || '').trim();
+          const initials = name ? name.split(/\\s+/).map(p=>p[0]).slice(0,2).join('').toUpperCase() : 'CV';
+          $avatar.textContent = initials;
         }
+  
+        // Notificações: API simples para atualizares onde quiseres
+        const $badge = document.getElementById('notifBadge');
+        window.setNotificationCount = function(n){
+          const num = Number(n) || 0;
+          if (!$badge) return;
+          if (num <= 0) { $badge.classList.add('hidden'); $badge.textContent = '0'; }
+          else { $badge.classList.remove('hidden'); $badge.textContent = String(num); }
+        };
+        // inicializa a 0
+        window.setNotificationCount(0);
       })();
     </script>
   </body>
   </html>`;
   }
+  
   
 
 function select(name, label, options, valueField = 'id', labelField = 'name') {
