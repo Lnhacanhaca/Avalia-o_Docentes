@@ -1,16 +1,13 @@
-/**
- * ISPT – Sistema Web de Avaliação Docente (MVP Consolidado)
- * Stack: Node.js (Express) + SQLite (better-sqlite3) + Tailwind (CDN) + Chart.js (CDN)
- * Export: Excel (exceljs), PDF (pdfkit)
- * Extras: Autenticação simples (admin), Ano lectivo, Turma, Importação via Excel
- *
- * Como executar:
- *   1) npm init -y
- *   2) npm i express cookie-parser multer better-sqlite3 body-parser exceljs pdfkit dayjs
- *   3) ADMIN_PASSWORD=coloca-uma-senha node app.js
- *   4) Abrir: http://localhost:3000
- */
-
+// app.js — ISPT – Sistema Web de Avaliação Docente (FINAL corrigido)
+// Stack: Node.js (Express) + SQLite (better-sqlite3) + Tailwind (CDN) + Chart.js (CDN)
+// Export: Excel (exceljs), PDF (pdfkit)
+// Extras: .env (dotenv), Autenticação simples (admin), Ano lectivo, Turma, Importação via Excel
+// Como executar:
+// 1) npm init -y
+// 2) npm i express cookie-parser multer better-sqlite3 body-parser exceljs pdfkit dayjs dotenv
+// 3) mkdir public && (coloque um logo em public/logo.png se quiser)
+// 4) ADMIN_PASSWORD=coloca-uma-senha node app.js   (ou use .env)
+// 5) Abrir: http://localhost:3000
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -20,20 +17,26 @@ const Database = require('better-sqlite3');
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const dayjs = require('dayjs');
-
-const app = express();
-const db = new Database('avaliacao_ispt.sqlite');
-
+const fs = require('fs');
 require('dotenv').config();
 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'ispt-admin';
+// ====== APP & DB ======
+const app = express();
+const db = new Database('avaliacao_ispt.sqlite');
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ====== ENV ======
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'ispt-admin';
+const LOGO_PATH = process.env.LOGO_PATH || 'logo.jpg';
+const RESPONDENTS_TARGET = Number(process.env.RESPONDENTS_TARGET || 0);
+
+// ====== MIDDLEWARES ======
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(cookieParser());
+app.use(express.static('public'));
 
-// ====== BASE DE DADOS: SCHEMA ======
+// ====== SCHEMA ======
 const schema = `
 CREATE TABLE IF NOT EXISTS course (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,11 +59,11 @@ CREATE TABLE IF NOT EXISTS teacher (
 );
 CREATE TABLE IF NOT EXISTS school_year (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE -- ex.: 2025/2026
+  name TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS class_group (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE -- ex.: Turma A, Noite, etc.
+  name TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS teaching (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +82,7 @@ CREATE TABLE IF NOT EXISTS survey_question (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL,
   text TEXT NOT NULL,
-  area TEXT NOT NULL -- ex.: Preparação, Metodologia, Organização, Avaliação, Relação
+  area TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS survey_response (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,48 +100,37 @@ CREATE TABLE IF NOT EXISTS survey_answer (
   FOREIGN KEY(question_id) REFERENCES survey_question(id)
 );
 `;
+
+// create/upgrade
 db.exec(schema);
-
-// Índice único para não duplicar a mesma leccionação
-db.exec(`
-  CREATE UNIQUE INDEX IF NOT EXISTS ux_teaching
-  ON teaching(teacher_id, discipline_id, semester_id, school_year_id, class_group_id);
-`);
-
-// tentar adicionar colunas se a BD for antiga
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_teaching ON teaching(teacher_id, discipline_id, semester_id, school_year_id, class_group_id);`);
 try { db.exec('ALTER TABLE teaching ADD COLUMN school_year_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE teaching ADD COLUMN class_group_id INTEGER'); } catch {}
 
-// ====== DADOS INICIAIS (SEED) ======
+// ====== SEED ======
 function seedOnce() {
-  const hasCourses = db.prepare('SELECT COUNT(*) as c FROM course').get().c > 0;
+  const hasCourses = db.prepare('SELECT COUNT(*) c FROM course').get().c > 0;
   if (hasCourses) return;
-
-  // Cursos
   const courses = ['Engenharia Informática', 'Engenharia de Minas', 'Processamento Mineral'];
   const insCourse = db.prepare('INSERT INTO course (name) VALUES (?)');
   courses.forEach(c => insCourse.run(c));
 
-  // Semestres / Períodos
   const semesters = ['1º Semestre', '2º Semestre', 'Anual'];
   const insSem = db.prepare('INSERT INTO semester (name) VALUES (?)');
   semesters.forEach(s => insSem.run(s));
 
-  // Anos lectivos
   const years = ['2025'];
   const insYear = db.prepare('INSERT INTO school_year (name) VALUES (?)');
   years.forEach(y => insYear.run(y));
 
-  // Turmas
   const classes = ['Turma A', 'Turma B', 'Única Pós-laboral'];
   const insClass = db.prepare('INSERT INTO class_group (name) VALUES (?)');
   classes.forEach(c => insClass.run(c));
 
-  // Disciplinas
   const discByCourse = {
-    'Engenharia Informática': ['Algoritmos', 'Estruturas de Dados', 'Redes de Computadores'],
-    'Engenharia de Minas': ['Topografia', 'Perfuração e Desmonte', 'Ventilação de Minas'],
-    'Processamento Mineral': ['Cominuição', 'Classificação', 'Flotação']
+    'Engenharia Informática': ['Algoritmos','Estruturas de Dados','Redes de Computadores'],
+    'Engenharia de Minas': ['Topografia','Perfuração e Desmonte','Ventilação de Minas'],
+    'Processamento Mineral': ['Cominuição','Classificação','Flotação']
   };
   const getCourse = db.prepare('SELECT id FROM course WHERE name=?');
   const insDisc = db.prepare('INSERT INTO discipline (course_id, name) VALUES (?,?)');
@@ -147,25 +139,22 @@ function seedOnce() {
     discs.forEach(d => insDisc.run(cid, d));
   });
 
-  // Docentes
-  const teachers = ['Docente A', 'Docente B', 'Docente C'];
+  const teachers = ['Docente A','Docente B','Docente C'];
   const insT = db.prepare('INSERT INTO teacher (name) VALUES (?)');
   teachers.forEach(t => insT.run(t));
 
-  // Ligações ensino (teacher + discipline + semester + ano + turma)
   const allDisc = db.prepare('SELECT id FROM discipline').all();
   const allSem = db.prepare('SELECT id FROM semester').all();
   const allTeach = db.prepare('SELECT id FROM teacher').all();
   const year = db.prepare('SELECT id FROM school_year LIMIT 1').get();
   const klass = db.prepare('SELECT id FROM class_group LIMIT 1').get();
   const insTeach = db.prepare('INSERT INTO teaching (teacher_id, discipline_id, semester_id, school_year_id, class_group_id) VALUES (?,?,?,?,?)');
-  allDisc.forEach((d, idx) => {
-    const t = allTeach[idx % allTeach.length];
-    const s = allSem[idx % allSem.length];
+  allDisc.forEach((d, i) => {
+    const t = allTeach[i % allTeach.length];
+    const s = allSem[i % allSem.length];
     insTeach.run(t.id, d.id, s.id, year?.id || null, klass?.id || null);
   });
 
-  // Questões (0–2)
   const questions = [
     { code: 'Q1', text: 'Chega a tempo às aulas.', area: 'Preparação' },
     { code: 'Q2', text: 'Comparece regularmente às aulas.', area: 'Preparação' },
@@ -195,27 +184,16 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${title}</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            ispt: { 50: '#eef8f3', 100: '#d6efe3', 200: '#aee0c8', 300: '#7fd0ac', 400: '#4dbf92', 500: '#25b17b', 600: '#178d63', 700: '#106e4e', 800: '#0e5640', 900: '#0c4735' }
-          }
-        }
-      }
-    }
-  </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     .card{background:#fff;border-radius:1rem;box-shadow:0 8px 30px rgba(0,0,0,.06);border:1px solid #e2e8f0;padding:1.25rem}
     .btn{display:inline-flex;align-items:center;gap:.5rem;padding:.5rem 1rem;border-radius:.75rem;font-weight:500}
     .btn-primary{background:#0f172a;color:#fff}
     .btn-ghost{background:#f1f5f9}
-    .kpi{text-align:center}
-    .kpi h3{font-size:.875rem;color:#64748b}
-    .kpi .v{font-size:1.75rem;font-weight:700}
-    .chip{display:inline-flex;align-items:center;gap:.5rem;padding:.25rem .625rem;border-radius:999px;font-size:.75rem;background:#f1f5f9}
+    .kpi{text-align:left}
+    .kpi h3{font-size:.875rem;color:#64748b;text-align:left}
+    .kpi .v{font-size:1.75rem;font-weight:800;color:#0f172a;letter-spacing:-.01em}
+    canvas{max-height:260px !important}
   </style>
   ${extraHead}
 </head>
@@ -224,7 +202,7 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
     <header class="mb-6 sticky top-0 bg-slate-50/80 backdrop-blur z-30">
       <div class="flex items-center justify-between py-2">
         <a href="/" class="flex items-center gap-2">
-          <div class="w-8 h-8 rounded-full" style="background:#25b17b;display:grid;place-content:center;color:#fff;font-weight:700">i</div>
+          <img src="/logo.png" alt="Logo" class="w-9 h-9 object-contain" onerror="this.style.display='none'"/>
           <span class="font-semibold">ISPT · Avaliação Docente</span>
         </a>
         <nav class="text-sm flex gap-3 flex-wrap">
@@ -237,10 +215,10 @@ function renderPage(title, content, extraHead = '', isAdmin = false) {
       </div>
     </header>
     <main class="card">
-      <h1 class="text-2xl sm:text-3xl font-bold mb-4">${title}</h1>
+      <h1 class="text-2xl sm:text-3xl font-bold mb-4 text-left">${title}</h1>
       ${content}
     </main>
-    <footer class="mt-8 text-xs text-slate-500 text-center">ISPT · Avaliação Docente · ${new Date().getFullYear()}</footer>
+    <footer class="mt-8 text-xs text-slate-500 text-center">ISPT · ${new Date().getFullYear()}</footer>
   </div>
 </body>
 </html>`;
@@ -285,12 +263,9 @@ app.post('/login', (req, res) => {
   res.send(renderPage('Erro de autenticação', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
-app.get('/logout', (req, res) => {
-  res.clearCookie('ispt_admin');
-  res.redirect('/');
-});
+app.get('/logout', (req, res) => { res.clearCookie('ispt_admin'); res.redirect('/'); });
 
-// ====== ROTA: FORM INQUÉRITO ======
+// ====== HOME / INQUÉRITO ======
 app.get('/', (req, res) => {
   const courses = db.prepare('SELECT * FROM course ORDER BY name').all();
   const semesters = db.prepare('SELECT * FROM semester ORDER BY id').all();
@@ -300,15 +275,10 @@ app.get('/', (req, res) => {
     <form method="GET" action="/inquerito" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       ${select('course_id', 'Curso', courses)}
       ${select('semester_id', 'Semestre/Período lectivo', semesters)}
-      <div class="sm:col-span-2">
-        ${select('school_year_id', 'Ano lectivo', years)}
-      </div>
-      <div class="sm:col-span-2">
-        <button class="btn btn-primary">Continuar</button>
-      </div>
+      <div class="sm:col-span-2">${select('school_year_id', 'Ano lectivo', years)}</div>
+      <div class="sm:col-span-2"><button class="btn btn-primary">Continuar</button></div>
     </form>
-    <p class="text-sm text-slate-600 mt-4">Nota: se o mesmo docente leccionar várias disciplinas, preencha um inquérito por disciplina.</p>
-  `;
+    <p class="text-sm text-slate-600 mt-4">Nota: se o mesmo docente leccionar várias disciplinas, preencha um inquérito por disciplina.</p>`;
   res.send(renderPage('ISPT – Inquérito a Estudantes', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
@@ -316,7 +286,6 @@ app.get('/inquerito', (req, res) => {
   const { course_id, semester_id, school_year_id } = req.query;
   if (!course_id || !semester_id || !school_year_id) return res.redirect('/');
 
-  // Disciplinas com leccionação nesse curso/ano/semestre
   const teachRows = db.prepare(`
     SELECT DISTINCT d.id as discipline_id, d.name as discipline_name
     FROM teaching t
@@ -325,7 +294,6 @@ app.get('/inquerito', (req, res) => {
     ORDER BY d.name
   `).all(course_id, semester_id, school_year_id);
 
-  // Mapa Disciplina -> Docentes (apenas quem lecciona nessa disciplina/ano/semestre)
   const teachMapRows = db.prepare(`
     SELECT d.id as discipline_id, te.id as teacher_id, te.name as teacher_name
     FROM teaching t
@@ -343,11 +311,9 @@ app.get('/inquerito', (req, res) => {
 
   const questions = db.prepare('SELECT * FROM survey_question ORDER BY id').all();
 
-  // Select de disciplina (a lista válida para o período)
   const disciplines = teachRows.map(r => ({ id: r.discipline_id, name: r.discipline_name }));
   const discSel = select('discipline_id', 'Disciplina', disciplines);
 
-  // Select de docente (preenchido quando escolhe a disciplina)
   const teachSel = `
     <label class="block mb-2 font-medium">Docente</label>
     <select id="teacher_id" name="teacher_id" required class="w-full border rounded-xl p-2 mb-4" disabled>
@@ -358,23 +324,16 @@ app.get('/inquerito', (req, res) => {
       document.addEventListener('DOMContentLoaded', () => {
         const disc = document.querySelector('select[name="discipline_id"]');
         const teacher = document.getElementById('teacher_id');
-        function fillTeachers(list) {
+        function fillTeachers(list){
           teacher.innerHTML = '<option value="" disabled selected>— seleccione —</option>';
-          (list || []).forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = t.id; opt.textContent = t.name; teacher.appendChild(opt);
-          });
+          (list||[]).forEach(t => { const opt=document.createElement('option'); opt.value=t.id; opt.textContent=t.name; teacher.appendChild(opt); });
           teacher.disabled = !(list && list.length);
           teacher.classList.toggle('opacity-50', teacher.disabled);
         }
-        disc.addEventListener('change', e => {
-          fillTeachers(TEACHER_MAP[e.target.value] || []);
-        });
+        disc.addEventListener('change', e => fillTeachers(TEACHER_MAP[e.target.value]||[]));
       });
-    </script>
-  `;
+    </script>`;
 
-  // Turmas por turno
   const turmaA = db.prepare("SELECT id, name FROM class_group WHERE name = 'Turma A'").get();
   const turmaB = db.prepare("SELECT id, name FROM class_group WHERE name = 'Turma B'").get();
   const posUnica = db.prepare("SELECT id, name FROM class_group WHERE name = 'Única Pós-laboral'").get();
@@ -385,88 +344,49 @@ app.get('/inquerito', (req, res) => {
       <option value="" disabled selected>— seleccione —</option>
       <option value="diurno">Diurno</option>
       <option value="pos">Pós-laboral</option>
-    </select>
-  `;
+    </select>`;
 
   const turmaSel = `
     <label class="block mb-2 font-medium">Turma</label>
     <select id="class_group_id" name="class_group_id" required class="w-full border rounded-xl p-2 mb-4 opacity-50" disabled>
       <option value="" disabled selected>— seleccione —</option>
     </select>
-
     <script>
-      const TURMA_A = ${turmaA ? turmaA.id : 'null'};
-      const TURMA_B = ${turmaB ? turmaB.id : 'null'};
-      const POS_UNICA = ${posUnica ? posUnica.id : 'null'};
-      const TURMA_A_NAME = ${JSON.stringify(turmaA ? turmaA.name : 'Turma A')};
-      const TURMA_B_NAME = ${JSON.stringify(turmaB ? turmaB.name : 'Turma B')};
-      const POS_UNICA_NAME = ${JSON.stringify(posUnica ? posUnica.name : 'Única Pós-laboral')};
-
-      document.addEventListener('DOMContentLoaded', () => {
-        const turno = document.getElementById('turno');
-        const turma = document.getElementById('class_group_id');
-        function fillTurmas(opts) {
-          turma.innerHTML = '<option value="" disabled selected>— seleccione —</option>';
-          opts.forEach(o => { if (!o || !o.id) return; const opt = document.createElement('option'); opt.value = o.id; opt.textContent = o.name; turma.appendChild(opt); });
-          const disabled = opts.length === 0;
-          turma.disabled = disabled;
-          turma.classList.toggle('opacity-50', disabled);
-          turma.classList.toggle('cursor-not-allowed', disabled);
-        }
-        const diurnoOpts = [
-          TURMA_A ? { id: TURMA_A, name: TURMA_A_NAME } : null,
-          TURMA_B ? { id: TURMA_B, name: TURMA_B_NAME } : null,
-        ].filter(Boolean);
-        const posOpts = [ POS_UNICA ? { id: POS_UNICA, name: POS_UNICA_NAME } : null ].filter(Boolean);
-        turno.addEventListener('change', (e) => {
-          if (e.target.value === 'diurno') fillTurmas(diurnoOpts);
-          else if (e.target.value === 'pos') fillTurmas(posOpts);
-          else fillTurmas([]);
-        });
+      const TURMA_A=${turmaA?turmaA.id:'null'}; const TURMA_B=${turmaB?turmaB.id:'null'}; const POS_UNICA=${posUnica?posUnica.id:'null'};
+      const TURMA_A_NAME=${JSON.stringify(turmaA?turmaA.name:'Turma A')};
+      const TURMA_B_NAME=${JSON.stringify(turmaB?turmaB.name:'Turma B')};
+      const POS_UNICA_NAME=${JSON.stringify(posUnica?posUnica.name:'Única Pós-laboral')};
+      document.addEventListener('DOMContentLoaded',()=>{
+        const turno=document.getElementById('turno'); const turma=document.getElementById('class_group_id');
+        function fill(opts){ turma.innerHTML='<option value="" disabled selected>— seleccione —</option>'; (opts||[]).forEach(o=>{ if(!o||!o.id) return; const op=document.createElement('option'); op.value=o.id; op.textContent=o.name; turma.appendChild(op);});
+          const dis=(opts||[]).length===0; turma.disabled=dis; turma.classList.toggle('opacity-50',dis); turma.classList.toggle('cursor-not-allowed',dis); }
+        const diurno=[TURMA_A?{id:TURMA_A,name:TURMA_A_NAME}:null, TURMA_B?{id:TURMA_B,name:TURMA_B_NAME}:null].filter(Boolean);
+        const pos=[POS_UNICA?{id:POS_UNICA,name:POS_UNICA_NAME}:null].filter(Boolean);
+        turno.addEventListener('change',e=>{ if(e.target.value==='diurno') fill(diurno); else if(e.target.value==='pos') fill(pos); else fill([]); });
       });
-    </script>
-  `;
+    </script>`;
 
-  // Questões
   const qHtml = questions.map(q => `
     <div class="mb-4">
-      <label class="block mb-1 font-medium">
-        ${q.code}. ${q.text}
-        <span class="text-xs text-slate-500">(0 = Nunca / 1 = Às vezes / 2 = Sempre)</span>
-      </label>
+      <label class="block mb-1 font-medium">${q.code}. ${q.text} <span class="text-xs text-slate-500">(0 = Nunca / 1 = Às vezes / 2 = Sempre)</span></label>
       <div class="flex gap-2">
-        ${[0,1,2].map(v => `
-          <label class="inline-flex items-center gap-2 border rounded-xl px-3 py-2">
-            <input type="radio" name="q_${q.id}" value="${v}" required /> ${v}
-          </label>
-        `).join('')}
+        ${[0,1,2].map(v => `<label class=\"inline-flex items-center gap-2 border rounded-xl px-3 py-2\"><input type=\"radio\" name=\"q_${q.id}\" value=\"${v}\" required /> ${v}</label>`).join('')}
       </div>
-    </div>
-  `).join('');
+    </div>`).join('');
 
   const content = `
     <form method="POST" action="/submit" class="space-y-4">
       <input type="hidden" name="course_id" value="${course_id}" />
       <input type="hidden" name="semester_id" value="${semester_id}" />
       <input type="hidden" name="school_year_id" value="${school_year_id}" />
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        ${discSel}
-        ${teachSel}
-        ${turnoSel}
-        ${turmaSel}
-      </div>
-
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">${discSel}${teachSel}${turnoSel}${turmaSel}</div>
       <hr class="my-4" />
       <h2 class="text-xl font-semibold mb-2">Questões</h2>
       ${qHtml}
-
       <label class="block mb-2 font-medium">Comentários (opcional)</label>
       <textarea name="comment" class="w-full border rounded-xl p-2" rows="4" placeholder="Sugestões, críticas construtivas, elogios..."></textarea>
-
       <button class="btn btn-primary">Submeter</button>
-    </form>
-  `;
+    </form>`;
 
   res.send(renderPage('Responder Inquérito', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
@@ -479,7 +399,6 @@ app.post('/submit', (req, res) => {
   }
   class_group_id = class_group_id || null;
 
-  // garantir teaching
   let teaching = db.prepare(`
     SELECT * FROM teaching
     WHERE teacher_id=? AND discipline_id=? AND semester_id=?
@@ -500,10 +419,8 @@ app.post('/submit', (req, res) => {
   const insAns = db.prepare('INSERT INTO survey_answer (response_id, question_id, value) VALUES (?,?,?)');
   const qs = db.prepare('SELECT id FROM survey_question').all();
   qs.forEach(q => {
-    const key = `q_${q.id}`;
-    const val = Number(answers[key]);
-    if (![0,1,2].includes(val)) return;
-    insAns.run(responseId, q.id, val);
+    const key = `q_${q.id}`; const val = Number(answers[key]);
+    if (![0,1,2].includes(val)) return; insAns.run(responseId, q.id, val);
   });
 
   const ok = `
@@ -515,10 +432,9 @@ app.post('/submit', (req, res) => {
   res.send(renderPage('Submissão concluída', ok, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
-// ====== API: ESTATÍSTICAS (por questão/área) ======
+// ====== API: ESTATÍSTICAS ======
 app.get('/api/stats', requireAuth, (req, res) => {
   const { course_id, semester_id, discipline_id, teacher_id, school_year_id, class_group_id } = req.query;
-
   const rows = db.prepare(`
     SELECT qa.question_id, AVG(qa.value) as avg_val
     FROM survey_answer qa
@@ -577,247 +493,98 @@ app.get('/admin', requireAuth, (req, res) => {
         <a class="btn btn-primary" id="exportExcel" href="#">Exportar Excel</a>
         <a class="btn btn-primary" id="exportPDF" href="#">Exportar PDF</a>
       </div>
-    </form>
-  `;
+    </form>`;
 
   const content = `
     ${filters}
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div>
-        <h2 class="text-lg font-semibold mb-2">Médias por questão</h2>
-        <canvas id="chartPerguntas" height="200"></canvas>
+        <h2 class="text-lg font-semibold mb-2 text-left">Médias por questão</h2>
+        <div style="height:220px"><canvas id="chartPerguntas"></canvas></div>
       </div>
       <div>
-        <h2 class="text-lg font-semibold mb-2">Médias por área</h2>
-        <canvas id="chartAreas" height="200"></canvas>
+        <h2 class="text-lg font-semibold mb-2 text-left">Médias por área</h2>
+        <div style="height:220px"><canvas id="chartAreas"></canvas></div>
       </div>
     </div>
     <div class="mt-6">
-      <h2 class="text-lg font-semibold mb-2">Comentários (qualitativo)</h2>
+      <h2 class="text-lg font-semibold mb-2 text-left">Comentários (qualitativo)</h2>
       <ul id="comments" class="space-y-2"></ul>
     </div>
-
     <script>
-      function params() {
-        const fd = new FormData(document.getElementById('filtros'));
-        const p = new URLSearchParams();
-        for (const [k,v] of fd.entries()) { if (v) p.append(k, v); }
-        return p.toString();
-      }
-
+      const round2 = x => Math.round(Number(x || 0) * 100) / 100;
+      function params(){ const fd=new FormData(document.getElementById('filtros')); const p=new URLSearchParams(); for(const [k,v] of fd.entries()){ if(v) p.append(k,v);} return p.toString(); }
       let chartPerguntas, chartAreas;
-      async function load() {
-        const res = await fetch('/api/stats?' + params());
-        const data = await res.json();
-
-        const map = new Map(data.rows.map(r => [r.question_id, r.avg_val]));
-        const labels = data.questions.map(q => q.code);
-        const values = data.questions.map(q => map.get(q.id) ?? null);
-
-        const ctx1 = document.getElementById('chartPerguntas').getContext('2d');
-        if (chartPerguntas) chartPerguntas.destroy();
-        chartPerguntas = new Chart(ctx1, {
-          type: 'bar',
-          data: { labels, datasets: [{ label: 'Média (0–2)', data: values, borderWidth: 1 }] },
-          options: { scales: { y: { suggestedMin: 0, suggestedMax: 2 } } }
-        });
-
-        const areaMap = {};
-        data.questions.forEach((q, idx) => {
-          const v = values[idx];
-          if (v == null) return;
-          areaMap[q.area] = areaMap[q.area] || { sum: 0, n: 0 };
-          areaMap[q.area].sum += v; areaMap[q.area].n += 1;
-        });
-        const areaLabels = Object.keys(areaMap);
-        const areaValues = areaLabels.map(a => (areaMap[a].sum / areaMap[a].n).toFixed(2));
-
-        const ctx2 = document.getElementById('chartAreas').getContext('2d');
-        if (chartAreas) chartAreas.destroy();
-        chartAreas = new Chart(ctx2, {
-          type: 'radar',
-          data: { labels: areaLabels, datasets: [{ label: 'Média por Área (0–2)', data: areaValues }] },
-          options: { scales: { r: { suggestedMin: 0, suggestedMax: 2 } } }
-        });
-
-        // Comentários
-        const ul = document.getElementById('comments');
-        ul.innerHTML = '';
-        if (!data.comments || !data.comments.length) {
-          ul.innerHTML = '<li class="text-slate-500">Sem dados para os filtros seleccionados.</li>';
-        } else {
-          data.comments.forEach(c => {
-            const li = document.createElement('li');
-            li.className = 'p-3 rounded-xl border';
-            const d = new Date(c.submitted_at).toLocaleString();
-            li.innerHTML = '<div class="text-sm text-slate-500">' + d + '</div><div>' + (c.comment||'') + '</div>';
-            ul.appendChild(li);
-          });
-        }
+      function renderNoData(ctx, msg='Sem dados para os filtros seleccionados.'){
+        const c = ctx.canvas; const g = c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
+        g.font = '12px sans-serif'; g.fillStyle = '#64748b'; g.textAlign = 'center'; g.fillText(msg, c.width/2, c.height/2);
       }
+      async function load(){
+        const res = await fetch('/api/stats?' + params()); const data = await res.json();
+        const map = new Map(data.rows.map(r=>[r.question_id, Number(r.avg_val)]));
+        const labels = data.questions.map(q=>q.code);
+        const values = data.questions.map(q=> { const v = map.get(q.id); return Number.isFinite(v) ? round2(v) : null; });
+        const ctx1 = document.getElementById('chartPerguntas').getContext('2d'); if(chartPerguntas) chartPerguntas.destroy();
+        if(values.every(v => v === null)) renderNoData(ctx1); else {
+          chartPerguntas = new Chart(ctx1,{ type:'bar', data:{ labels, datasets:[{label:'Média (0–2)', data:values.map(v=>v ?? 0), borderWidth:1}] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ suggestedMin:0, suggestedMax:2, ticks:{ stepSize:0.5 } } } } });
+        }
+        const areaAgg = {}; data.questions.forEach((q,i)=>{ const v=values[i]; if(v==null) return; (areaAgg[q.area] ||= {sum:0,n:0}); areaAgg[q.area].sum+=v; areaAgg[q.area].n++; });
+        const areaLabels = Object.keys(areaAgg); const areaVals = areaLabels.map(a=> round2(areaAgg[a].sum/areaAgg[a].n));
+        const ctx2 = document.getElementById('chartAreas').getContext('2d'); if(chartAreas) chartAreas.destroy();
+        if(!areaVals.length) renderNoData(ctx2); else {
+          chartAreas = new Chart(ctx2,{ type:'radar', data:{ labels:areaLabels, datasets:[{label:'Média por Área (0–2)', data:areaVals}] }, options:{ responsive:true, maintainAspectRatio:false, scales:{ r:{ suggestedMin:0, suggestedMax:2 } } } });
+        }
+        const ul = document.getElementById('comments'); ul.innerHTML='';
+        if(!data.comments || !data.comments.length){ ul.innerHTML='<li class="text-slate-500">Sem dados para os filtros seleccionados.</li>'; }
+        else { data.comments.forEach(c=>{ const li=document.createElement('li'); li.className='p-3 rounded-xl border'; const d=new Date(c.submitted_at).toLocaleString(); li.innerHTML='<div class="text-sm text-slate-500">'+d+'</div><div>'+(c.comment||'')+'</div>'; ul.appendChild(li); }); }
+      }
+      document.getElementById('aplicar').addEventListener('click', load); load();
+      document.getElementById('exportExcel').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/excel?'+params(); });
+      document.getElementById('exportPDF').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/pdf?'+params(); });
+    </script>`;
 
-      document.getElementById('aplicar').addEventListener('click', load);
-      load();
-
-      document.getElementById('exportExcel').addEventListener('click', (e) => {
-        e.preventDefault();
-        window.location = '/export/excel?' + params();
-      });
-      document.getElementById('exportPDF').addEventListener('click', (e) => {
-        e.preventDefault();
-        window.location = '/export/pdf?' + params();
-      });
-    </script>
-  `;
   res.send(renderPage('Relatório', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
-// ====== IMPORTAR LISTAS (ADMIN) ======
-app.get('/importar', requireAuth, (req, res) => {
+// ====== IMPORTAÇÃO ======
+app.get('/importar', requireAuth, (req,res)=>{
   const html = `
-  <form method="POST" action="/importar" enctype="multipart/form-data" class="space-y-4">
-    <p class="text-sm">
-      <b>Área restrita a administradores.</b><br/>
-      Carregue um Excel com folhas:
-      <b>cursos</b> (name),
-      <b>docentes</b> (name),
-      <b>disciplinas</b> (course, name) e
-      <b>leccionacao</b> (course, discipline, teacher, year, semester, class_group).
-    </p>
-    <label class="inline-flex items-center gap-2 text-sm">
-      <input type="checkbox" name="wipe_all" />
-      <span>Substituir dados antigos (limpa cursos/disciplinas/docentes/turmas/anos/semestres, respostas e leccionação)</span>
-    </label>
-    <input type="file" name="file" accept=".xlsx" required />
-    <button class="btn btn-primary">Importar</button>
-  </form>`;
+    <form method="POST" action="/importar" enctype="multipart/form-data" class="space-y-4">
+      <p class="text-sm"><b>Área restrita a administradores.</b><br/>Carregue um Excel com folhas: <b>cursos</b> (name), <b>docentes</b> (name), <b>disciplinas</b> (course, name) e <b>leccionacao</b> (course, discipline, teacher, year, semester, class_group).</p>
+      <label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="wipe_all" /><span>Substituir dados antigos</span></label>
+      <input type="file" name="file" accept=".xlsx" required />
+      <button class="btn btn-primary">Importar</button>
+    </form>`;
   res.send(renderPage('Importar Listas', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
-app.post('/importar', requireAuth, upload.single('file'), async (req, res) => {
-  try {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(req.file.buffer);
-
-    // Se marcado, apaga dados antigos antes de importar
-    if (req.body.wipe_all === 'on') {
-      const wipe = db.transaction(() => {
-        db.exec('DELETE FROM survey_answer;');
-        db.exec('DELETE FROM survey_response;');
-        db.exec('DELETE FROM teaching;');
-        db.exec('DELETE FROM discipline;');
-        db.exec('DELETE FROM teacher;');
-        db.exec('DELETE FROM course;');
-        db.exec('DELETE FROM school_year;');
-        db.exec('DELETE FROM class_group;');
-        db.exec('DELETE FROM semester;');
-      });
-      wipe();
-    }
-
-    // helpers
-    const upsertCourse     = db.prepare('INSERT OR IGNORE INTO course (name) VALUES (?)');
-    const getCourse        = db.prepare('SELECT id FROM course WHERE name=?');
-
-    const upsertTeacher    = db.prepare('INSERT OR IGNORE INTO teacher (name) VALUES (?)');
-    const getTeacher       = db.prepare('SELECT id FROM teacher WHERE name=?');
-
+app.post('/importar', requireAuth, upload.single('file'), async (req,res)=>{
+  try{
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(req.file.buffer);
+    if (req.body.wipe_all === 'on') { const wipe = db.transaction(()=>{ db.exec('DELETE FROM survey_answer;'); db.exec('DELETE FROM survey_response;'); db.exec('DELETE FROM teaching;'); db.exec('DELETE FROM discipline;'); db.exec('DELETE FROM teacher;'); db.exec('DELETE FROM course;'); db.exec('DELETE FROM school_year;'); db.exec('DELETE FROM class_group;'); db.exec('DELETE FROM semester;'); }); wipe(); }
+    const upsertCourse = db.prepare('INSERT OR IGNORE INTO course (name) VALUES (?)');
+    const getCourse = db.prepare('SELECT id FROM course WHERE name=?');
+    const upsertTeacher = db.prepare('INSERT OR IGNORE INTO teacher (name) VALUES (?)');
+    const getTeacher = db.prepare('SELECT id FROM teacher WHERE name=?');
     const upsertDiscipline = db.prepare('INSERT OR IGNORE INTO discipline (course_id, name) VALUES (?,?)');
-    const getDiscipline    = db.prepare('SELECT id FROM discipline WHERE course_id=? AND name=?');
+    const getDiscipline = db.prepare('SELECT id FROM discipline WHERE course_id=? AND name=?');
+    const upsertYear = db.prepare('INSERT OR IGNORE INTO school_year (name) VALUES (?)');
+    const getYear = db.prepare('SELECT id FROM school_year WHERE name=?');
+    const upsertSem = db.prepare('INSERT OR IGNORE INTO semester (name) VALUES (?)');
+    const getSem = db.prepare('SELECT id FROM semester WHERE name=?');
+    const upsertClass = db.prepare('INSERT OR IGNORE INTO class_group (name) VALUES (?)');
+    const getClass = db.prepare('SELECT id FROM class_group WHERE name=?');
+    const insTeaching = db.prepare('INSERT OR IGNORE INTO teaching (teacher_id, discipline_id, semester_id, school_year_id, class_group_id) VALUES (?,?,?,?,?)');
 
-    const upsertYear       = db.prepare('INSERT OR IGNORE INTO school_year (name) VALUES (?)');
-    const getYear          = db.prepare('SELECT id FROM school_year WHERE name=?');
-
-    const upsertSem        = db.prepare('INSERT OR IGNORE INTO semester (name) VALUES (?)');
-    const getSem           = db.prepare('SELECT id FROM semester WHERE name=?');
-
-    const upsertClass      = db.prepare('INSERT OR IGNORE INTO class_group (name) VALUES (?)');
-    const getClass         = db.prepare('SELECT id FROM class_group WHERE name=?');
-
-    const insTeaching      = db.prepare(`
-      INSERT OR IGNORE INTO teaching (teacher_id, discipline_id, semester_id, school_year_id, class_group_id)
-      VALUES (?,?,?,?,?)
-    `);
-
-    // 1) cursos
-    const sheetCursos = wb.getWorksheet('cursos');
-    if (sheetCursos) {
-      sheetCursos.eachRow((row, i) => {
-        if (i === 1) return;
-        const name = row.getCell(1).value?.toString().trim();
-        if (name) upsertCourse.run(name);
-      });
-    }
-
-    // 2) docentes
-    const sheetDoc = wb.getWorksheet('docentes');
-    if (sheetDoc) {
-      sheetDoc.eachRow((row, i) => {
-        if (i === 1) return;
-        const name = row.getCell(1).value?.toString().trim();
-        if (name) upsertTeacher.run(name);
-      });
-    }
-
-    // 3) disciplinas
-    const sheetDisc = wb.getWorksheet('disciplinas');
-    if (sheetDisc) {
-      sheetDisc.eachRow((row, i) => {
-        if (i === 1) return;
-        const courseName = row.getCell(1).value?.toString().trim();
-        const discName   = row.getCell(2).value?.toString().trim();
-        if (courseName && discName) {
-          upsertCourse.run(courseName);
-          const c = getCourse.get(courseName);
-          if (c) upsertDiscipline.run(c.id, discName);
-        }
-      });
-    }
-
-    // 4) leccionacao (curso + disciplina + docente + ano + semestre + turma)
-    const sheetTeach = wb.getWorksheet('leccionacao');
-    if (sheetTeach) {
-      sheetTeach.eachRow((row, i) => {
-        if (i === 1) return;
-
-        const courseName  = row.getCell(1).value?.toString().trim();
-        const discName    = row.getCell(2).value?.toString().trim();
-        const teacherName = row.getCell(3).value?.toString().trim();
-        const yearName    = row.getCell(4).value?.toString().trim();
-        const semName     = row.getCell(5).value?.toString().trim();
-        const className   = row.getCell(6).value?.toString().trim(); // opcional
-
-        if (!courseName || !discName || !teacherName || !yearName || !semName) return;
-
-        upsertCourse.run(courseName);
-        upsertTeacher.run(teacherName);
-        upsertYear.run(yearName);
-        upsertSem.run(semName);
-
-        const c = getCourse.get(courseName);
-        if (!c) return;
-
-        upsertDiscipline.run(c.id, discName);
-
-        const d = getDiscipline.get(c.id, discName);
-        const t = getTeacher.get(teacherName);
-        const y = getYear.get(yearName);
-        const s = getSem.get(semName);
-
-        let cg = null;
-        if (className) {
-          upsertClass.run(className);
-          cg = getClass.get(className);
-        }
-
-        if (d && t && y && s) {
-          insTeaching.run(t.id, d.id, s.id, y.id, cg ? cg.id : null);
-        }
-      });
-    }
+    const sheetCursos = wb.getWorksheet('cursos'); if (sheetCursos) sheetCursos.eachRow((row,i)=>{ if(i===1) return; const name=row.getCell(1).value?.toString().trim(); if(name) upsertCourse.run(name); });
+    const sheetDoc = wb.getWorksheet('docentes'); if (sheetDoc) sheetDoc.eachRow((row,i)=>{ if(i===1) return; const name=row.getCell(1).value?.toString().trim(); if(name) upsertTeacher.run(name); });
+    const sheetDisc = wb.getWorksheet('disciplinas'); if (sheetDisc) sheetDisc.eachRow((row,i)=>{ if(i===1) return; const courseName=row.getCell(1).value?.toString().trim(); const discName=row.getCell(2).value?.toString().trim(); if(courseName&&discName){ upsertCourse.run(courseName); const c=getCourse.get(courseName); if(c) upsertDiscipline.run(c.id,discName); } });
+    const sheetTeach = wb.getWorksheet('leccionacao'); if (sheetTeach) sheetTeach.eachRow((row,i)=>{
+      if(i===1) return; const courseName=row.getCell(1).value?.toString().trim(); const discName=row.getCell(2).value?.toString().trim(); const teacherName=row.getCell(3).value?.toString().trim(); const yearName=row.getCell(4).value?.toString().trim(); const semName=row.getCell(5).value?.toString().trim(); const className=row.getCell(6).value?.toString().trim(); if(!courseName||!discName||!teacherName||!yearName||!semName) return; upsertCourse.run(courseName); upsertTeacher.run(teacherName); upsertYear.run(yearName); upsertSem.run(semName); const c=getCourse.get(courseName); if(!c) return; upsertDiscipline.run(c.id,discName); const d=getDiscipline.get(c.id,discName); const t=getTeacher.get(teacherName); const y=getYear.get(yearName); const s=getSem.get(semName); let cg=null; if(className){ upsertClass.run(className); cg=getClass.get(className);} if(d&&t&&y&&s) insTeaching.run(t.id,d.id,s.id,y.id,cg?cg.id:null);
+    });
 
     res.send(renderPage('Importação concluída', '<p>Importação finalizada.</p>', '', (req.cookies && req.cookies.ispt_admin==='1')));
-  } catch (e) {
+  } catch(e){
     res.send(renderPage('Erro na importação', `<p class="text-red-600">Falhou a importação: ${e.message}</p>`, '', (req.cookies && req.cookies.ispt_admin==='1')));
   }
 });
@@ -825,9 +592,7 @@ app.post('/importar', requireAuth, upload.single('file'), async (req, res) => {
 // ====== EXPORT: EXCEL ======
 app.get('/export/excel', requireAuth, async (req, res) => {
   const { course_id, semester_id, discipline_id, teacher_id, school_year_id, class_group_id } = req.query;
-
   const qRows = db.prepare('SELECT id, code, text, area FROM survey_question ORDER BY id').all();
-
   const responses = db.prepare(`
     SELECT r.id as response_id, r.submitted_at, r.comment,
            t.teacher_id, t.discipline_id, t.semester_id, t.school_year_id, t.class_group_id,
@@ -852,15 +617,10 @@ app.get('/export/excel', requireAuth, async (req, res) => {
   `).all(course_id || null, semester_id || null, discipline_id || null, teacher_id || null, school_year_id || null, class_group_id || null);
 
   const ansByResp = db.prepare('SELECT question_id, value FROM survey_answer WHERE response_id=?');
-
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Respostas');
-
-  const header = [
-    'Data/Hora', 'Curso', 'Semestre', 'Ano lectivo', 'Turma', 'Disciplina', 'Docente', ...qRows.map(q => q.code), 'Comentário'
-  ];
+  const header = ['Data/Hora','Curso','Semestre','Ano lectivo','Turma','Disciplina','Docente', ...qRows.map(q=>q.code), 'Comentário'];
   ws.addRow(header);
-
   responses.forEach(r => {
     const ans = ansByResp.all(r.response_id);
     const map = new Map(ans.map(a => [a.question_id, a.value]));
@@ -869,97 +629,510 @@ app.get('/export/excel', requireAuth, async (req, res) => {
       ...qRows.map(q => map.get(q.id) ?? ''), r.comment || ''
     ]);
   });
-
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename="avaliacao_ispt.xlsx"');
-  await wb.xlsx.write(res);
-  res.end();
+  await wb.xlsx.write(res); res.end();
 });
 
-// ====== EXPORT: PDF (Resumo) ======
+
+ // ====== EXPORT: PDF (com capa, KPIs coloridos, tabela ordenada, pizza e secções) ======
 app.get('/export/pdf', requireAuth, (req, res) => {
-  const { course_id, semester_id, discipline_id, teacher_id, school_year_id, class_group_id } = req.query;
+    const { course_id, semester_id, discipline_id, teacher_id, school_year_id, class_group_id } = req.query;
+  
+    const course     = course_id      ? db.prepare('SELECT name FROM course WHERE id=?').get(course_id)           : null;
+    const semester   = semester_id    ? db.prepare('SELECT name FROM semester WHERE id=?').get(semester_id)       : null;
+    const discipline = discipline_id  ? db.prepare('SELECT name FROM discipline WHERE id=?').get(discipline_id)   : null;
+    const teacher    = teacher_id     ? db.prepare('SELECT name FROM teacher WHERE id=?').get(teacher_id)         : null;
+    const schoolYear = school_year_id ? db.prepare('SELECT name FROM school_year WHERE id=?').get(school_year_id) : null;
+    const klass      = class_group_id ? db.prepare('SELECT name FROM class_group WHERE id=?').get(class_group_id) : null;
+  
+    // Totais e média global
+    const totals = db.prepare(`
+      SELECT COUNT(DISTINCT r.id) as total_resp, AVG(a.value) as media_global
+      FROM survey_response r
+      JOIN survey_answer a ON a.response_id = r.id
+      JOIN teaching t ON t.id = r.teaching_id
+      JOIN discipline d ON d.id = t.discipline_id
+      WHERE (COALESCE(?, d.course_id) = d.course_id)
+        AND (COALESCE(?, t.semester_id) = t.semester_id)
+        AND (COALESCE(?, t.discipline_id) = t.discipline_id)
+        AND (COALESCE(?, t.teacher_id) = t.teacher_id)
+        AND (COALESCE(?, t.school_year_id) = t.school_year_id)
+        AND (COALESCE(?, t.class_group_id) = t.class_group_id)
+    `).get(course_id||null, semester_id||null, discipline_id||null, teacher_id||null, school_year_id||null, class_group_id||null);
+  
+    // Por questão (contagens e média)
+    const byQuestionRaw = db.prepare(`
+      SELECT
+        q.id, q.code, q.text, q.area,
+        SUM(CASE WHEN a.value = 0 THEN 1 ELSE 0 END) AS c0,
+        SUM(CASE WHEN a.value = 1 THEN 1 ELSE 0 END) AS c1,
+        SUM(CASE WHEN a.value = 2 THEN 1 ELSE 0 END) AS c2,
+        COUNT(a.value) AS total,
+        AVG(a.value)   AS avg_val
+      FROM survey_question q
+      LEFT JOIN survey_answer a ON a.question_id = q.id
+      LEFT JOIN survey_response r ON r.id = a.response_id
+      LEFT JOIN teaching t ON t.id = r.teaching_id
+      LEFT JOIN discipline d ON d.id = t.discipline_id
+      WHERE (COALESCE(?, d.course_id) = d.course_id)
+        AND (COALESCE(?, t.semester_id) = t.semester_id)
+        AND (COALESCE(?, t.discipline_id) = t.discipline_id)
+        AND (COALESCE(?, t.teacher_id) = t.teacher_id)
+        AND (COALESCE(?, t.school_year_id) = t.school_year_id)
+        AND (COALESCE(?, t.class_group_id) = t.class_group_id)
+      GROUP BY q.id
+    `).all(course_id||null, semester_id||null, discipline_id||null, teacher_id||null, school_year_id||null, class_group_id||null);
+  
+    // Comentários agrupados por frequência (Top 10)
+    const comments = db.prepare(`
+      SELECT MIN(TRIM(r.comment)) AS sample_comment,
+             LOWER(TRIM(r.comment)) AS norm_key,
+             COUNT(*) AS freq
+      FROM survey_response r
+      JOIN teaching t ON t.id = r.teaching_id
+      JOIN discipline d ON d.id = t.discipline_id
+      WHERE r.comment IS NOT NULL AND r.comment <> ''
+        AND (COALESCE(?, d.course_id) = d.course_id)
+        AND (COALESCE(?, t.semester_id) = t.semester_id)
+        AND (COALESCE(?, t.discipline_id) = t.discipline_id)
+        AND (COALESCE(?, t.teacher_id) = t.teacher_id)
+        AND (COALESCE(?, t.school_year_id) = t.school_year_id)
+        AND (COALESCE(?, t.class_group_id) = t.class_group_id)
+      GROUP BY norm_key
+      ORDER BY freq DESC
+      LIMIT 10
+    `).all(course_id||null, semester_id||null, discipline_id||null, teacher_id||null, school_year_id||null, class_group_id||null);
+  
+    // ===== PDF =====
+    const PDFDocument = require('pdfkit');
+    const fs = require('fs');
+    const dayjs = require('dayjs');
+  
+    const LOGO_PRIMARY = process.env.LOGO_PRIMARY || '#0f172a';
+    const LOGO_ACCENT  = process.env.LOGO_ACCENT  || '#25b17b';
+  
+    const resolveLogo = () => {
+      const tryPaths = [process.env.LOGO_PATH, 'public/logo.png', 'public/logo.jpg', 'logo.png', 'logo.jpg'].filter(Boolean);
+      for (const p of tryPaths) { try { if (fs.existsSync(p)) return p; } catch {} }
+      return null;
+    };
+    const pct   = (n, d) => (!d || d <= 0) ? '0%' : `${Math.round((Number(n||0) / Number(d)) * 100)}%`;
+    const trunc = (s, n=60) => { const t = String(s||'').trim(); return t.length > n ? t.slice(0, n-1) + '…' : t; };
+  
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="relatorio_avaliacao.pdf"');
+  
+    const margin = 22;
+    const doc = new PDFDocument({ size: 'A4', margin });
+    doc.pipe(res);
+  
+   // ===== Capa / Cabeçalho =====
+const logoPath = resolveLogo();
+if (logoPath) {
+  const img = doc.openImage(logoPath);
+  const w = Math.min(img.width, doc.page.width - margin * 2);
+  const h = (img.height / img.width) * w;
+  const x = (doc.page.width - w) / 2;
+  const y = doc.y;
+  doc.image(logoPath, x, y, { width: w, height: h });
+  // título imediatamente abaixo do logo
+  doc.y = y + h + 10;
+}
 
-  const course = course_id ? db.prepare('SELECT name FROM course WHERE id=?').get(course_id) : null;
-  const semester = semester_id ? db.prepare('SELECT name FROM semester WHERE id=?').get(semester_id) : null;
-  const discipline = discipline_id ? db.prepare('SELECT name FROM discipline WHERE id=?').get(discipline_id) : null;
-  const teacher = teacher_id ? db.prepare('SELECT name FROM teacher WHERE id=?').get(teacher_id) : null;
-  const schoolYear = school_year_id ? db.prepare('SELECT name FROM school_year WHERE id=?').get(school_year_id) : null;
-  const klass = class_group_id ? db.prepare('SELECT name FROM class_group WHERE id=?').get(class_group_id) : null;
+// Título genérico (sem curso), centrado
+doc.x = margin;
+doc.font('Helvetica-Bold').fontSize(16)
+   .text('Relatório de Avaliação Docente', margin, doc.y, {
+     width: doc.page.width - margin * 2,
+     align: 'center'
+   });
 
-  const stats = db.prepare(`
-    SELECT q.code, q.text, q.area, AVG(a.value) as avg_val
-    FROM survey_question q
-    LEFT JOIN survey_answer a ON a.question_id = q.id
-    LEFT JOIN survey_response r ON r.id = a.response_id
-    LEFT JOIN teaching t ON t.id = r.teaching_id
-    LEFT JOIN discipline d ON d.id = t.discipline_id
-    WHERE (COALESCE(?, d.course_id) = d.course_id)
-      AND (COALESCE(?, t.semester_id) = t.semester_id)
-      AND (COALESCE(?, t.discipline_id) = t.discipline_id)
-      AND (COALESCE(?, t.teacher_id) = t.teacher_id)
-      AND (COALESCE(?, t.school_year_id) = t.school_year_id)
-      AND (COALESCE(?, t.class_group_id) = t.class_group_id)
-    GROUP BY q.id
-    ORDER BY q.id
-  `).all(course_id || null, semester_id || null, discipline_id || null, teacher_id || null, school_year_id || null, class_group_id || null);
+// espaço pequeno antes dos metadados
+doc.moveDown(0.6);
 
-  const comments = db.prepare(`
-    SELECT r.comment FROM survey_response r
-    JOIN teaching t ON t.id = r.teaching_id
-    JOIN discipline d ON d.id = t.discipline_id
-    WHERE r.comment IS NOT NULL AND r.comment <> ''
-      AND (COALESCE(?, d.course_id) = d.course_id)
-      AND (COALESCE(?, t.semester_id) = t.semester_id)
-      AND (COALESCE(?, t.discipline_id) = t.discipline_id)
-      AND (COALESCE(?, t.teacher_id) = t.teacher_id)
-      AND (COALESCE(?, t.school_year_id) = t.school_year_id)
-      AND (COALESCE(?, t.class_group_id) = t.class_group_id)
-    ORDER BY r.submitted_at DESC LIMIT 100
-  `).all(course_id || null, semester_id || null, discipline_id || null, teacher_id || null, school_year_id || null, class_group_id || null);
+// === Metadados dinâmicos (cada item em uma linha, alinhado à esquerda) ===
+// Observação: "turno" vem de query (?turno=diurno|pos)
+const turno = (req.query.turno && String(req.query.turno).trim()) || null;
 
-  const doc = new PDFDocument({ margin: 40 });
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', 'attachment; filename="relatorio_avaliacao.pdf"');
-  doc.pipe(res);
+doc.x = margin;
+doc.font('Helvetica').fontSize(10).fillColor('#334155');
 
-  doc.fontSize(16).text('ISPT – Relatório de Avaliação Docente', { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(10).text(`Gerado em: ${dayjs().format('YYYY-MM-DD HH:mm')}`);
-  if (course) doc.text(`Curso: ${course.name}`);
-  if (semester) doc.text(`Semestre: ${semester.name}`);
-  if (schoolYear) doc.text(`Ano lectivo: ${schoolYear.name}`);
-  if (klass) doc.text(`Turma: ${klass.name}`);
-  if (discipline) doc.text(`Disciplina: ${discipline.name}`);
-  if (teacher) doc.text(`Docente: ${teacher.name}`);
-  doc.moveDown();
+const metaLines = [];
+if (course?.name)     metaLines.push(`Curso: ${course.name}`);
+if (schoolYear?.name) metaLines.push(`Ano lectivo: ${schoolYear.name}`);
+if (semester?.name)   metaLines.push(`Semestre: ${semester.name}`);
+if (klass?.name)      metaLines.push(`Turma: ${klass.name}`);
+if (turno)            metaLines.push(`Turno: ${turno === 'pos' ? 'Pós-laboral' : turno}`);
+if (discipline?.name) metaLines.push(`Disciplina: ${discipline.name}`);
+if (teacher?.name)    metaLines.push(`Docente: ${teacher.name}`);
+metaLines.push(`Data: ${dayjs().format('YYYY-MM-DD')}`);
 
-  doc.fontSize(12).text('Médias por questão (0–2)');
-  doc.moveDown(0.5);
-  stats.forEach(s => {
-    const v = s.avg_val != null ? Number(s.avg_val).toFixed(2) : '-';
-    doc.fontSize(10).text(`${s.code} (${s.area}) – ${v} – ${s.text}`);
-  });
-
-  doc.moveDown();
-  doc.fontSize(12).text('Comentários (qualitativo)');
-  doc.moveDown(0.5);
-  if (comments.length === 0) {
-    doc.fontSize(10).text('Sem comentários.');
-  } else {
-    comments.forEach((c) => { doc.fontSize(10).text(`• ${c.comment}`); });
-  }
-
-  doc.end();
+metaLines.forEach(line => {
+  doc.text(line, { align: 'left', width: doc.page.width - margin * 2 });
 });
 
+doc.moveDown(0.8);
+
+  
+    // ===== KPIs (quadrados coloridos, CENTRALIZADOS e mais bonitos) =====
+const contentWidth = doc.page.width - margin * 2;
+const boxW = 188;           // largura de cada KPI
+const boxH = 56;            // altura de cada KPI
+const gap  = 18;            // espaçamento entre caixas
+const startX = margin + Math.max(0, Math.floor((contentWidth - boxW * 2 + gap) / 2)); // centraliza no conteúdo
+const kpiY = doc.y;
+
+// util: decide cor do texto (preto/branco) conforme o fundo
+const pickTextColor = (hex) => {
+  const h = String(hex || '').replace('#','');
+  const r = parseInt(h.substring(0,2),16), g = parseInt(h.substring(2,4),16), b = parseInt(h.substring(4,6),16);
+  // luminância relativa sRGB
+  const srgb = [r,g,b].map(v => { v/=255; return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); });
+  const L = 0.2126*srgb[0] + 0.7152*srgb[1] + 0.0722*srgb[2];
+  return L > 0.52 ? '#0f172a' : '#ffffff';
+};
+
+const kpiBox = (x, title, value, bg) => {
+  const fg = pickTextColor(bg);
+
+  // sombra suave
+  doc.save();
+  doc.fillColor('#000000').opacity(0.12);
+  doc.roundedRect(x + 2, kpiY + 3, boxW, boxH, 10).fill();
+  doc.restore();
+
+  // cartão
+  doc.save();
+  doc.roundedRect(x, kpiY, boxW, boxH, 10).fill(bg);
+  // borda sutil por cima
+  doc.opacity(1).lineWidth(0.8).strokeColor('#e2e8f0').roundedRect(x, kpiY, boxW, boxH, 10).stroke();
+
+  // “badge” decorativo (anel) no canto direito
+  const cx = x + boxW - 16, cy = kpiY + 16, r = 6;
+  doc.save();
+  doc.lineWidth(1.2).strokeColor(fg === '#ffffff' ? '#ffffff' : '#0f172a').circle(cx, cy, r).stroke();
+  doc.restore();
+
+  // texto
+  doc.fillColor(fg).font('Helvetica').fontSize(9)
+     .text(title, x + 14, kpiY + 10, { width: boxW - 28, align: 'left' });
+  doc.font('Helvetica-Bold').fontSize(20)
+     .text(String(value ?? '—'), x + 14, kpiY + 24, { width: boxW - 28, align: 'left' });
+
+  doc.restore();
+};
+
+const mediaGlobalTxt = totals?.media_global != null ? Number(totals.media_global).toFixed(2) : '—';
+kpiBox(startX,             'Total de respostas', totals?.total_resp ?? 0, LOGO_PRIMARY);
+kpiBox(startX + boxW + gap,'Média global (0–2)', mediaGlobalTxt,        LOGO_ACCENT);
+
+// avança o cursor e insere um separador fino abaixo
+doc.y = kpiY + boxH + 12;
+const sep = () => {
+  const xL = margin, xR = doc.page.width - margin, y = doc.y;
+  doc.moveTo(xL, y).lineTo(xR, y).strokeColor('#e5e7eb').lineWidth(0.8).stroke();
+  doc.moveDown(0.6);
+};
+sep();
+
+
+    // ===== Metodologia (alinhado à esquerda) =====
+    doc.x = margin;
+    doc.font('Helvetica-Bold').fontSize(11).fillColor('#0f172a')
+       .text('Metodologia', { align: 'left' });
+    doc.moveDown(0.1);
+    doc.font('Helvetica').fontSize(9.5).fillColor('#334155')
+       .text('Inquérito online com anonimato garantido. Escala de respostas: 0 (Nunca), 1 (Às vezes), 2 (Sempre). O período de recolha é definido pela instituição.',
+             { width: doc.page.width - margin*2, align: 'justify' });
+    sep();
+  
+    // ===== Tabela de Questões (ordenada por média, com cores) + Pizza Totais =====
+    const byQuestion = [...byQuestionRaw].sort((a,b) => (b.avg_val || 0) - (a.avg_val || 0));
+    doc.font('Helvetica-Bold').fontSize(11).fillColor('#0f172a').text('Questões (ordenadas por média)');
+    doc.moveDown(0.2);
+  
+    const tableX = margin, tableY = doc.y;
+    const col = [
+      { key: 'code', w: 44,  label: 'Cód.' },
+      { key: 'text', w: 238, label: 'Questão' },
+      { key: 'p0',   w: 52,  label: '0 (Nunca)' },
+      { key: 'p1',   w: 52,  label: '1 (Às vezes)' },
+      { key: 'p2',   w: 52,  label: '2 (Sempre)' },
+      { key: 'avg',  w: 52,  label: 'Média' },
+    ];
+    const totalW = col.reduce((s,c)=>s+c.w,0);
+  
+    // Cabeçalho da tabela
+    doc.save();
+    doc.rect(tableX, tableY, (boxW * 2 + gap), 18).fill('#f1f5f9');
+    doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(8);
+    let cx = tableX + 4;
+    col.forEach(c => { doc.text(c.label, cx, tableY + 5, { width: c.w - 8, align: c.key==='text' ? 'left':'center' }); cx += c.w; });
+    doc.restore();
+  
+    let rowY = tableY + 18;
+    let totalC0 = 0, totalC1 = 0, totalC2 = 0, totalRespAll = 0;
+  
+    byQuestion.forEach((q, idx) => {
+      const t = Number(q.total || 0);
+      totalC0 += Number(q.c0 || 0);
+      totalC1 += Number(q.c1 || 0);
+      totalC2 += Number(q.c2 || 0);
+      totalRespAll += t;
+  
+      const avg = Number(q.avg_val || 0);
+      let bg = null;
+      if (avg >= 1.5) bg = '#eafff1';           // verde claro
+      else if (avg >= 1.0) bg = '#fffbe6';      // amarelo claro
+      else if (t > 0) bg = '#ffecec';           // vermelho claro
+      if (bg) { doc.save(); doc.rect(tableX, rowY, (boxW * 2 + gap), 16).fill(bg); doc.restore(); }
+  
+      const row = { code:q.code, text:trunc(q.text,60), p0:pct(q.c0,t), p1:pct(q.c1,t), p2:pct(q.c2,t), avg:t?avg.toFixed(2):'—' };
+      let x = tableX + 4;
+      col.forEach(c => {
+        let color = '#334155';
+        if (c.key === 'avg' && t) {
+          if (avg >= 1.5) color = '#16a34a';
+          else if (avg >= 1.0) color = '#ca8a04';
+          else color = '#dc2626';
+        }
+        doc.fillColor(color).font('Helvetica').fontSize(8)
+           .text(String(row[c.key] ?? ''), x, rowY + 4, { width: c.w - 8, align: c.key==='text' ? 'left' : 'center' });
+        x += c.w;
+      });
+  
+      rowY += 16;
+    });
+  
+    // Linha final: média geral da turma
+    doc.save();
+    doc.rect(tableX, rowY, (boxW * 2 + gap), 18).fill('#f8fafc');
+    doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(9)
+       .text('Média geral da turma', tableX + 6, rowY + 5, { width: boxW * 2 + gap - 120, align: 'left' });
+    doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(9)
+       .text(totals?.media_global != null ? Number(totals.media_global).toFixed(2) : '—',
+             tableX + boxW * 2 + gap - 60, rowY + 5, { width: 54, align: 'center' });
+    doc.restore();
+  
+    // Totais por texto
+    const totalsY = rowY + 22;
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text('Totais absolutos', tableX, totalsY);
+    doc.font('Helvetica').fontSize(9).fillColor('#334155')
+       .text(`0 (Nunca): ${totalC0}   •   1 (Às vezes): ${totalC1}   •   2 (Sempre): ${totalC2}   •   Total (todas as questões): ${totalRespAll}`,
+             tableX, totalsY + 14, { width: boxW * 2 + gap, align: 'left' });
+  /*
+    // Gráfico de Pizza (à direita)
+    (function drawPie() {
+      const rightX = tableX + boxW * 2 + gap + 14;
+      const areaW  = (doc.page.width - margin) - rightX;
+      if (areaW < 80) return; // sem espaço suficiente
+      const topY   = tableY + 10;
+      const radius = Math.min(70, Math.floor(Math.min(areaW, 160) / 2));
+      const cx = rightX + radius, cy = topY + radius;
+  
+      const sum = totalC0 + totalC1 + totalC2;
+      if (sum <= 0) {
+        doc.font('Helvetica').fontSize(8).fillColor('#64748b').text('Sem dados para pizza.', rightX, topY);
+        return;
+      }
+  
+      const parts = [
+        { label: '0 (Nunca)',    value: totalC0, color: '#dc2626' },
+        { label: '1 (Às vezes)', value: totalC1, color: '#ca8a04' },
+        { label: '2 (Sempre)',   value: totalC2, color: '#16a34a' },
+      ];
+  
+      let start = 0;
+      parts.forEach(p => {
+        const angle = (p.value / sum) * Math.PI * 2;
+        const end = start + angle;
+        doc.save();
+        doc.moveTo(cx, cy)
+           .path(`M ${cx} ${cy} L ${cx + radius*Math.cos(start)} ${cy + radius*Math.sin(start)} A ${radius} ${radius} 0 ${angle>Math.PI?1:0} 1 ${cx + radius*Math.cos(end)} ${cy + radius*Math.sin(end)} Z`)
+           .fill(p.color);
+        doc.restore();
+        start = end;
+      });
+  
+      // legenda
+      let ly = cy + radius + 8;
+      parts.forEach(p => {
+        const perc = Math.round((p.value/sum)*100);
+        doc.save().rect(rightX, ly, 8, 8).fill(p.color).restore();
+        doc.font('Helvetica').fontSize(8).fillColor('#334155')
+           .text(`${p.label}: ${p.value} (${perc}%)`, rightX + 12, ly - 1);
+        ly += 12;
+      });
+    })();
+  
+    // continuar após pizza
+    doc.y = Math.max(doc.y, totalsY + 40);
+    sep();
+    */
+  
+ // ===== Principais tendências observadas (DINÂMICAS, com base na tabela) =====
+(function renderDynamicTrends(){
+    // Garantir base de dados válida
+    const items = (byQuestion || [])
+      .filter(q => Number(q.total || 0) > 0 && Number.isFinite(Number(q.avg_val)))
+      .map(q => ({ code: q.code, avg: Number(q.avg_val) }));
+  
+    doc.x = margin;
+    doc.font('Helvetica-Bold').fontSize(11).fillColor('#0f172a')
+       .text('Principais tendências observadas', { align: 'left' });
+  
+    if (!items.length) {
+      doc.font('Helvetica').fontSize(9.5).fillColor('#334155')
+         .text('Sem dados suficientes para calcular tendências.', { align: 'justify' });
+      sep();
+      return;
+    }
+  
+    // Estatísticas simples
+    const avgs = items.map(i => i.avg);
+    const minAvg = Math.min(...avgs);
+    const maxAvg = Math.max(...avgs);
+    const mean   = avgs.reduce((s,v)=>s+v,0) / avgs.length;
+    const std    = Math.sqrt(avgs.reduce((s,v)=>s+(v-mean)*(v-mean),0) / avgs.length);
+  
+    // Regras:
+    // - Pontos fortes: médias >= 1.5 (ou, se nada atingir, top 3 por média)
+    // - Pontos fracos: médias < 1.0 (ou, se nada cair abaixo, bottom 3 por média)
+    const STRONG_TH = 1.5;
+    const WEAK_TH   = 1.0;
+    const TOPK      = 3;
+  
+    const desc = [...items].sort((a,b)=> b.avg - a.avg);
+    const asc  = [...items].sort((a,b)=> a.avg - b.avg);
+  
+    let strengths = desc.filter(i => i.avg >= STRONG_TH);
+    let weaknesses = asc.filter(i => i.avg < WEAK_TH);
+  
+    if (!strengths.length) strengths = desc.slice(0, TOPK);
+    if (!weaknesses.length) weaknesses = asc.slice(0, TOPK);
+  
+    const fmt = arr => arr.map(i => `${i.code} (${i.avg.toFixed(2)})`).join(', ');
+  
+    // Texto
+    doc.font('Helvetica').fontSize(9.5).fillColor('#334155')
+       .list([
+         `Resumo: amplitude ${minAvg.toFixed(2)} a ${maxAvg.toFixed(2)} • desvio-padrão ${std.toFixed(2)}.`,
+         `Pontos fortes: ${fmt(strengths)}.`,
+         `Pontos fracos: ${fmt(weaknesses)}.`
+       ], { bulletRadius: 2 });
+  
+    sep();
+  })();
+  
+    // ===== Comentários (qualitativo) – Top por frequência =====
+    doc.x = margin;
+    doc.font('Helvetica-Bold').fontSize(11).fillColor('#0f172a').text('Comentários (qualitativo)', { align: 'left' });
+    if (!comments.length) {
+      doc.font('Helvetica').fontSize(9.5).fillColor('#334155')
+         .text('Sem comentários registados pelos estudantes nesta aplicação.', { align: 'justify' });
+    } else {
+      comments.forEach(c => {
+        const line = `• ${c.sample_comment} — ${c.freq}×`;
+        doc.font('Helvetica').fontSize(9.5).fillColor('#334155').text(line, { align: 'justify' });
+      });
+      doc.moveDown(0.2);
+      doc.font('Helvetica').fontSize(8).fillColor('#94a3b8')
+         .text('Nota: comentários idênticos foram agrupados. A listagem completa continua disponível no Excel.', { align: 'left' });
+    }
+    sep();
+  
+   // ===== Conclusões e recomendações (DINÂMICAS com base na tabela) =====
+(function renderDynamicConclusions(){
+    // Base: usar as mesmas médias e totais já calculados para a tabela
+    const items = (byQuestion || [])
+      .filter(q => Number(q.total || 0) > 0 && Number.isFinite(Number(q.avg_val)))
+      .map(q => ({
+        code: q.code,
+        text: q.text,
+        avg: Number(q.avg_val)
+      }));
+  
+    doc.x = margin;
+    doc.font('Helvetica-Bold').fontSize(11).fillColor('#0f172a')
+       .text('Conclusões e recomendações', { align: 'left' });
+    doc.moveDown(0.2);
+  
+    if (!items.length) {
+      // fallback se não houver dados
+      doc.font('Helvetica').fontSize(9.5).fillColor('#334155')
+         .text('Sem dados suficientes para gerar conclusões dinâmicas.', { align: 'justify' });
+      sep();
+      return;
+    }
+  
+    // Parâmetros
+    const STRONG_TH = 1.5; // boas práticas: ≥ 1.5
+    const WEAK_TH   = 1.0; // áreas de melhoria: < 1.0
+    const TOPK_STR  = 5;   // máximos a exibir por bloco (se existirem)
+    const TOPK_FALLBACK = 3;
+  
+    // Ordenações
+    const desc = [...items].sort((a,b) => b.avg - a.avg); // maiores primeiro
+    const asc  = [...items].sort((a,b) => a.avg - b.avg); // menores primeiro
+  
+    // Seleções dinâmicas
+    let strengths  = desc.filter(i => i.avg >= STRONG_TH).slice(0, TOPK_STR);
+    let weaknesses = asc.filter(i => i.avg < WEAK_TH).slice(0, TOPK_STR);
+  
+    // Fallbacks caso não bata nenhum threshold
+    if (!strengths.length)  strengths  = desc.slice(0, TOPK_FALLBACK);
+    if (!weaknesses.length) weaknesses = asc.slice(0, TOPK_FALLBACK);
+  
+    // Formatação de cada bullet (curta, legível)
+    const short = (s, n=72) => {
+      const t = String(s||'').trim();
+      return t.length > n ? t.slice(0, n - 1) + '…' : t;
+    };
+    const fmt = i => `${i.code} – ${short(i.text)} (média ${i.avg.toFixed(2)})`;
+  
+    // --- Boas práticas a manter ---
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#0f172a')
+       .text('Boas práticas a manter:', { align: 'left' });
+    doc.font('Helvetica').fontSize(9.5).fillColor('#334155')
+       .list(
+         strengths.map(i => `Manter e consolidar: ${fmt(i)}`),
+         { bulletRadius: 2 }
+       );
+  
+    // --- Áreas de melhoria ---
+    doc.moveDown(0.3);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#0f172a')
+       .text('Áreas de melhoria:', { align: 'left' });
+    doc.font('Helvetica').fontSize(9.5).fillColor('#334155')
+       .list(
+         weaknesses.map(i => `Melhorar/implementar: ${fmt(i)}`),
+         { bulletRadius: 2 }
+       );
+  
+    // (Opcional) Nota tática curta
+    doc.moveDown(0.2);
+    doc.font('Helvetica').fontSize(8.5).fillColor('#94a3b8')
+       .text('Sugestão: priorizar um plano de ação para 2–3 itens com menor média no curto prazo.', { align: 'left' });
+  
+    sep();
+  })();
+  
+    // Rodapé (escala)
+    doc.moveDown(0.6);
+    doc.font('Helvetica').fontSize(8).fillColor('#94a3b8')
+       .text('Escala: 0 (Nunca), 1 (Às vezes), 2 (Sempre).', { align: 'center' });
+  
+    doc.end();
+  });
+  
+  
+   
+  
 // ====== API: DASHBOARD (agregado) ======
 app.get('/api/dashboard', requireAuth, (req, res) => {
   const { course_id, semester_id, discipline_id, teacher_id, school_year_id, class_group_id } = req.query;
-
-  const q = (sql) => db.prepare(sql).all(
-    course_id || null, semester_id || null, discipline_id || null, teacher_id || null, school_year_id || null, class_group_id || null
-  );
+  const q = (sql) => db.prepare(sql).all(course_id||null, semester_id||null, discipline_id||null, teacher_id||null, school_year_id||null, class_group_id||null);
 
   const total = db.prepare(`
     SELECT COUNT(*) as c
@@ -1048,17 +1221,10 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
     LIMIT 12
   `);
 
-  res.json({
-    totalResponses: total,
-    teachersEvaluated: docentes,
-    avgOverall: avgRow?.m ?? null,
-    areas,
-    timeseries,
-    comments
-  });
+  res.json({ totalResponses: total, teachersEvaluated: docentes, avgOverall: avgRow?.m ?? null, areas, timeseries, comments });
 });
 
-// ====== Página: DASHBOARD (UI) ======
+// ====== DASHBOARD (UI) ======
 app.get('/dashboard', requireAuth, (req, res) => {
   const courses = db.prepare('SELECT * FROM course ORDER BY name').all();
   const semesters = db.prepare('SELECT * FROM semester ORDER BY id').all();
@@ -1089,97 +1255,46 @@ app.get('/dashboard', requireAuth, (req, res) => {
 
   const html = `
     ${filtros}
-
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
       <div class="card kpi"><h3>Total de respostas</h3><div id="k_total" class="v">—</div></div>
       <div class="card kpi"><h3>Docentes avaliados</h3><div id="k_doc" class="v">—</div></div>
       <div class="card kpi"><h3>Média global (0–2)</h3><div id="k_media" class="v">—</div></div>
       <div class="card kpi"><h3>Índice % (0–100)</h3><div id="k_idx" class="v">—</div></div>
     </div>
-
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div class="card">
-        <h2 class="text-lg font-semibold mb-2">Médias por área</h2>
-        <canvas id="chartAreasDash" height="220"></canvas>
-      </div>
-      <div class="card">
-        <h2 class="text-lg font-semibold mb-2">Respostas por dia</h2>
-        <canvas id="chartSerieDash" height="220"></canvas>
-      </div>
+      <div class="card"><h2 class="text-lg font-semibold mb-2 text-left">Médias por área</h2><div style="height:220px"><canvas id="chartAreasDash"></canvas></div></div>
+      <div class="card"><h2 class="text-lg font-semibold mb-2 text-left">Respostas por dia</h2><div style="height:220px"><canvas id="chartSerieDash"></canvas></div></div>
     </div>
-
-    <div class="mt-6 card">
-      <h2 class="text-lg font-semibold mb-3">Comentários recentes</h2>
-      <ul id="ulComments" class="space-y-2"></ul>
-    </div>
-
+    <div class="mt-6 card"><h2 class="text-lg font-semibold mb-3 text-left">Comentários recentes</h2><ul id="ulComments" class="space-y-2"></ul></div>
     <script>
-      let cAreas, cSerie;
-      const pct = x => Math.round((x/2)*100);
-
-      function params() {
-        const fd = new FormData(document.getElementById('filtrosDash'));
-        const p = new URLSearchParams();
-        for (const [k,v] of fd.entries()) if (v) p.append(k,v);
-        return p.toString();
-      }
-
-      async function load() {
-        const res = await fetch('/api/dashboard?' + params());
-        const d = await res.json();
-
-        // KPIs
+      let cAreas, cSerie; const pct = x => Math.round((Number(x||0)/2)*100); const round2 = x => Math.round(Number(x||0)*100)/100;
+      function params(){ const fd=new FormData(document.getElementById('filtrosDash')); const p=new URLSearchParams(); for(const [k,v] of fd.entries()) if(v) p.append(k,v); return p.toString(); }
+      function noData(ctx, msg='Sem dados'){ const c=ctx.canvas; const g=c.getContext('2d'); g.clearRect(0,0,c.width,c.height); g.font='12px sans-serif'; g.fillStyle='#64748b'; g.textAlign='center'; g.fillText(msg, c.width/2, c.height/2); }
+      async function load(){
+        const res = await fetch('/api/dashboard?' + params()); const d = await res.json();
         document.getElementById('k_total').textContent = d.totalResponses ?? 0;
         document.getElementById('k_doc').textContent   = d.teachersEvaluated ?? 0;
-        document.getElementById('k_media').textContent = d.avgOverall != null ? Number(d.avgOverall).toFixed(2) : '—';
-        document.getElementById('k_idx').textContent   = d.avgOverall != null ? pct(d.avgOverall) + '%' : '—';
-
-        // Áreas (bar)
-        const aLabels = d.areas.map(x => x.area);
-        const aVals   = d.areas.map(x => Number(x.media).toFixed(2));
-        if (cAreas) cAreas.destroy();
-        cAreas = new Chart(document.getElementById('chartAreasDash').getContext('2d'), {
-          type: 'bar',
-          data: { labels: aLabels, datasets: [{ label: 'Média (0–2)', data: aVals, borderWidth: 1 }] },
-          options: { scales: { y: { suggestedMin: 0, suggestedMax: 2 } } }
-        });
-
-        // Série temporal (line)
-        const sLabels = d.timeseries.map(x => x.dia);
-        const sVals   = d.timeseries.map(x => x.c);
-        if (cSerie) cSerie.destroy();
-        cSerie = new Chart(document.getElementById('chartSerieDash').getContext('2d'), {
-          type: 'line',
-          data: { labels: sLabels, datasets: [{ label: 'Respostas/dia', data: sVals, tension: .3, fill: false }] },
-          options: { scales: { y: { beginAtZero: true } } }
-        });
-
-        // Comentários
-        const ul = document.getElementById('ulComments');
-        ul.innerHTML = '';
-        (d.comments || []).forEach(c => {
-          const li = document.createElement('li');
-          li.className = 'p-3 rounded-xl border';
-          const dt = new Date(c.submitted_at).toLocaleString();
-          li.innerHTML = '<div class="text-xs text-slate-500">'+dt+'</div><div>'+c.comment+'</div>';
-          ul.appendChild(li);
-        });
-        if (!d.comments || !d.comments.length) {
-          const li = document.createElement('li');
-          li.className = 'text-slate-500';
-          li.textContent = 'Sem comentários no período/escopo selecionado.';
-          ul.appendChild(li);
+        document.getElementById('k_media').textContent = d.avgOverall!=null ? round2(d.avgOverall).toFixed(2) : '—';
+        document.getElementById('k_idx').textContent   = d.avgOverall!=null ? pct(d.avgOverall)+'%' : '—';
+        const aLabels = (d.areas||[]).map(x=>x.area); const aVals = (d.areas||[]).map(x=> round2(x.media));
+        if(cAreas) cAreas.destroy(); const ctxA = document.getElementById('chartAreasDash').getContext('2d');
+        if(!aVals.length){ noData(ctxA); } else {
+          cAreas = new Chart(ctxA, { type:'bar', data:{ labels:aLabels, datasets:[{ label:'Média (0–2)', data:aVals, borderWidth:1 }] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ y:{ suggestedMin:0, suggestedMax:2 } } } });
         }
-      }
-
-      document.getElementById('aplicarDash').addEventListener('click', load);
-      load();
-    </script>
-  `;
+        const sLabels = (d.timeseries||[]).map(x=>x.dia); const sVals = (d.timeseries||[]).map(x=> Number(x.c)||0);
+        if(cSerie) cSerie.destroy(); const ctxS = document.getElementById('chartSerieDash').getContext('2d');
+        if(!sVals.length){ noData(ctxS); } else {
+          cSerie = new Chart(ctxS, { type:'line', data:{ labels:sLabels, datasets:[{ label:'Respostas/dia', data:sVals, tension:.3, fill:false }] }, options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } } });
+        }
+        const ul=document.getElementById('ulComments'); ul.innerHTML='';
+        (d.comments||[]).forEach(c=>{ const li=document.createElement('li'); li.className='p-3 rounded-xl border'; const dt=new Date(c.submitted_at).toLocaleString(); li.innerHTML='<div class="text-xs text-slate-500">'+dt+'</div><div>'+c.comment+'</div>'; ul.appendChild(li); });
+        if(!d.comments||!d.comments.length){ const li=document.createElement('li'); li.className='text-slate-500'; li.textContent='Sem comentários no período/escopo seleccionado.'; ul.appendChild(li);} }
+      document.getElementById('aplicarDash').addEventListener('click', load); load();
+    </script>`;
 
   res.send(renderPage('Dashboard', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
-// ====== INICIAR SERVIDOR ======
+// ====== START ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`ISPT – Avaliação Docente a correr em http://localhost:${PORT}`));
