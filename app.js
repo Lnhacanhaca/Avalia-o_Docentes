@@ -470,81 +470,199 @@ app.get('/api/stats', requireAuth, (req, res) => {
   res.json({ rows, questions, comments });
 });
 
-// ====== RELATÓRIO (UI) ======
+// ===== API: Disciplinas por Curso =====
+app.get('/api/disciplinas', requireAuth, (req, res) => {
+    const { course_id } = req.query;
+    if (!course_id) return res.json({ items: [] });
+    const items = db.prepare(
+      'SELECT id, name FROM discipline WHERE course_id = ? ORDER BY name'
+    ).all(course_id);
+    res.json({ items });
+  });
+  
+  // ===== API: Docentes por Disciplina (a partir de teaching) =====
+  app.get('/api/docentes', requireAuth, (req, res) => {
+    const { discipline_id } = req.query;
+    if (!discipline_id) return res.json({ items: [] });
+    const items = db.prepare(`
+      SELECT DISTINCT te.id, te.name
+      FROM teaching t
+      JOIN teacher te ON te.id = t.teacher_id
+      WHERE t.discipline_id = ?
+      ORDER BY te.name
+    `).all(discipline_id);
+    res.json({ items });
+  });
+
+  // ====== RELATÓRIO (UI) – Curso -> Disciplina -> Docente (via APIs) ======
 app.get('/admin', requireAuth, (req, res) => {
-  const courses = db.prepare('SELECT * FROM course ORDER BY name').all();
-  const semesters = db.prepare('SELECT * FROM semester ORDER BY id').all();
-  const disciplines = db.prepare('SELECT * FROM discipline ORDER BY name').all();
-  const teachers = db.prepare('SELECT * FROM teacher ORDER BY name').all();
-  const years = db.prepare('SELECT * FROM school_year ORDER BY name DESC').all();
-  const classes = db.prepare('SELECT * FROM class_group ORDER BY name').all();
-
-  const filters = `
-    <form id="filtros" class="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
-      ${select('course_id', 'Curso', courses)}
-      ${select('semester_id', 'Semestre/Período', semesters)}
-      ${select('discipline_id', 'Disciplina', disciplines)}
-      ${select('teacher_id', 'Docente', teachers)}
-      ${select('school_year_id', 'Ano lectivo', years)}
-      ${select('class_group_id', 'Turma', classes)}
-      <div class="md:col-span-6 flex gap-2 flex-wrap">
-        <button type="button" id="aplicar" class="btn btn-primary">Aplicar</button>
-        <a class="btn btn-ghost" href="/admin">Limpar</a>
-        <a class="btn btn-primary" id="exportExcel" href="#">Exportar Excel</a>
-        <a class="btn btn-primary" id="exportPDF" href="#">Exportar PDF</a>
+    const courses   = db.prepare('SELECT id, name FROM course ORDER BY name').all();
+    const semesters = db.prepare('SELECT id, name FROM semester ORDER BY id').all();
+    const years     = db.prepare('SELECT id, name FROM school_year ORDER BY name DESC').all();
+    const classes   = db.prepare('SELECT id, name FROM class_group ORDER BY name').all();
+  
+    // Helper local p/ selects simples
+    const sel = (name, label, options) => {
+      const opts = options.map(o => `<option value="${o.id}">${o.name}</option>`).join('');
+      return `
+        <label class="block mb-2 font-medium">${label}</label>
+        <select name="${name}" class="w-full border rounded-xl p-2">
+          <option value="">— Todos —</option>
+          ${opts}
+        </select>
+      `;
+    };
+  
+    // Disciplina & Docente começam vazios (serão preenchidos via fetch)
+    const discSelect = `
+      <label class="block mb-2 font-medium">Disciplina</label>
+      <select name="discipline_id" class="w-full border rounded-xl p-2 opacity-50 cursor-not-allowed" disabled>
+        <option value="">— seleccione —</option>
+      </select>
+    `;
+    const teachSelect = `
+      <label class="block mb-2 font-medium">Docente</label>
+      <select name="teacher_id" class="w-full border rounded-xl p-2 opacity-50 cursor-not-allowed" disabled>
+        <option value="">— seleccione —</option>
+      </select>
+    `;
+  
+    const filters = `
+      <form id="filtros" class="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
+        ${sel('course_id','Curso',courses)}
+        ${sel('semester_id','Semestre/Período',semesters)}
+        ${discSelect}
+        ${teachSelect}
+        ${sel('school_year_id','Ano lectivo',years)}
+        ${sel('class_group_id','Turma',classes)}
+        <div class="md:col-span-6 flex gap-2 flex-wrap">
+          <button type="button" id="aplicar" class="btn btn-primary">Aplicar</button>
+          <a class="btn btn-ghost" href="/admin">Limpar</a>
+          <a class="btn btn-primary" id="exportExcel" href="#">Exportar Excel</a>
+          <a class="btn btn-primary" id="exportPDF" href="#">Exportar PDF</a>
+        </div>
+      </form>`;
+  
+    const content = `
+      ${filters}
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div>
+          <h2 class="text-lg font-semibold mb-2 text-left">Médias por questão</h2>
+          <div style="height:220px"><canvas id="chartPerguntas"></canvas></div>
+        </div>
+        <div>
+          <h2 class="text-lg font-semibold mb-2 text-left">Médias por área</h2>
+          <div style="height:220px"><canvas id="chartAreas"></canvas></div>
+        </div>
       </div>
-    </form>`;
-
-  const content = `
-    ${filters}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div>
-        <h2 class="text-lg font-semibold mb-2 text-left">Médias por questão</h2>
-        <div style="height:220px"><canvas id="chartPerguntas"></canvas></div>
+      <div class="mt-6">
+        <h2 class="text-lg font-semibold mb-2 text-left">Comentários (qualitativo)</h2>
+        <ul id="comments" class="space-y-2"></ul>
       </div>
-      <div>
-        <h2 class="text-lg font-semibold mb-2 text-left">Médias por área</h2>
-        <div style="height:220px"><canvas id="chartAreas"></canvas></div>
-      </div>
-    </div>
-    <div class="mt-6">
-      <h2 class="text-lg font-semibold mb-2 text-left">Comentários (qualitativo)</h2>
-      <ul id="comments" class="space-y-2"></ul>
-    </div>
-    <script>
-      const round2 = x => Math.round(Number(x || 0) * 100) / 100;
-      function params(){ const fd=new FormData(document.getElementById('filtros')); const p=new URLSearchParams(); for(const [k,v] of fd.entries()){ if(v) p.append(k,v);} return p.toString(); }
-      let chartPerguntas, chartAreas;
-      function renderNoData(ctx, msg='Sem dados para os filtros seleccionados.'){
-        const c = ctx.canvas; const g = c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
-        g.font = '12px sans-serif'; g.fillStyle = '#64748b'; g.textAlign = 'center'; g.fillText(msg, c.width/2, c.height/2);
-      }
-      async function load(){
-        const res = await fetch('/api/stats?' + params()); const data = await res.json();
-        const map = new Map(data.rows.map(r=>[r.question_id, Number(r.avg_val)]));
-        const labels = data.questions.map(q=>q.code);
-        const values = data.questions.map(q=> { const v = map.get(q.id); return Number.isFinite(v) ? round2(v) : null; });
-        const ctx1 = document.getElementById('chartPerguntas').getContext('2d'); if(chartPerguntas) chartPerguntas.destroy();
-        if(values.every(v => v === null)) renderNoData(ctx1); else {
-          chartPerguntas = new Chart(ctx1,{ type:'bar', data:{ labels, datasets:[{label:'Média (0–2)', data:values.map(v=>v ?? 0), borderWidth:1}] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ suggestedMin:0, suggestedMax:2, ticks:{ stepSize:0.5 } } } } });
+  
+      <script>
+        // ===== Encadeamento: Curso -> Disciplina -> Docente =====
+        (function cascadeFilters(){
+          const form = document.getElementById('filtros');
+          const selCourse = form.querySelector('select[name="course_id"]');
+          const selDisc   = form.querySelector('select[name="discipline_id"]');
+          const selTeach  = form.querySelector('select[name="teacher_id"]');
+  
+          const setDisabled = (el, dis) => {
+            el.disabled = dis;
+            el.classList.toggle('opacity-50', dis);
+            el.classList.toggle('cursor-not-allowed', dis);
+          };
+          const resetToSelect = (el) => {
+            el.innerHTML = '<option value="">— seleccione —</option>';
+          };
+  
+          async function loadDisciplinas(courseId){
+            resetToSelect(selDisc);
+            setDisabled(selDisc, true);
+            resetToSelect(selTeach);
+            setDisabled(selTeach, true);
+            if(!courseId) return;
+  
+            const r = await fetch('/api/disciplinas?course_id=' + encodeURIComponent(courseId));
+            const data = await r.json();
+            const items = data.items || [];
+            if (!items.length) return;
+            selDisc.innerHTML = '<option value="">— Todos —</option>' + items.map(i => '<option value="'+i.id+'">'+i.name+'</option>').join('');
+            setDisabled(selDisc, false);
+            if (items.length === 1) selDisc.value = String(items[0].id);
+          }
+  
+          async function loadDocentes(discId){
+            resetToSelect(selTeach);
+            setDisabled(selTeach, true);
+            if(!discId) return;
+  
+            const r = await fetch('/api/docentes?discipline_id=' + encodeURIComponent(discId));
+            const data = await r.json();
+            const items = (data.items || []);
+            if (!items.length) return;
+            selTeach.innerHTML = '<option value="">— Todos —</option>' + items.map(i => '<option value="'+i.id+'">'+i.name+'</option>').join('');
+            setDisabled(selTeach, false);
+            if (items.length === 1) selTeach.value = String(items[0].id);
+          }
+  
+          selCourse.addEventListener('change', e => {
+            const cid = e.target.value;
+            loadDisciplinas(cid);
+            resetToSelect(selTeach); setDisabled(selTeach, true);
+          });
+  
+          selDisc.addEventListener('change', e => {
+            const did = e.target.value;
+            loadDocentes(did);
+          });
+  
+          // Inicialização (se o navegador preencheu algo)
+          if (selCourse.value) loadDisciplinas(selCourse.value).then(()=> {
+            if (selDisc.value) loadDocentes(selDisc.value);
+          });
+        })();
+  
+        // ===== Dashboard existente =====
+        const round2 = x => Math.round(Number(x || 0) * 100) / 100;
+        function params(){ const fd=new FormData(document.getElementById('filtros')); const p=new URLSearchParams(); for(const [k,v] of fd.entries()){ if(v) p.append(k,v);} return p.toString(); }
+        let chartPerguntas, chartAreas;
+  
+        function renderNoData(ctx, msg='Sem dados para os filtros seleccionados.'){
+          const c = ctx.canvas; const g = c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
+          g.font = '12px sans-serif'; g.fillStyle = '#64748b'; g.textAlign = 'center'; g.fillText(msg, c.width/2, c.height/2);
         }
-        const areaAgg = {}; data.questions.forEach((q,i)=>{ const v=values[i]; if(v==null) return; (areaAgg[q.area] ||= {sum:0,n:0}); areaAgg[q.area].sum+=v; areaAgg[q.area].n++; });
-        const areaLabels = Object.keys(areaAgg); const areaVals = areaLabels.map(a=> round2(areaAgg[a].sum/areaAgg[a].n));
-        const ctx2 = document.getElementById('chartAreas').getContext('2d'); if(chartAreas) chartAreas.destroy();
-        if(!areaVals.length) renderNoData(ctx2); else {
-          chartAreas = new Chart(ctx2,{ type:'radar', data:{ labels:areaLabels, datasets:[{label:'Média por Área (0–2)', data:areaVals}] }, options:{ responsive:true, maintainAspectRatio:false, scales:{ r:{ suggestedMin:0, suggestedMax:2 } } } });
+        async function load(){
+          const res = await fetch('/api/stats?' + params()); const data = await res.json();
+          const map = new Map(data.rows.map(r=>[r.question_id, Number(r.avg_val)]));
+          const labels = data.questions.map(q=>q.code);
+          const values = data.questions.map(q=> { const v = map.get(q.id); return Number.isFinite(v) ? round2(v) : null; });
+  
+          const ctx1 = document.getElementById('chartPerguntas').getContext('2d'); if(chartPerguntas) chartPerguntas.destroy();
+          if(values.every(v => v === null)) renderNoData(ctx1); else {
+            chartPerguntas = new Chart(ctx1,{ type:'bar', data:{ labels, datasets:[{label:'Média (0–2)', data:values.map(v=>v ?? 0), borderWidth:1}] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ suggestedMin:0, suggestedMax:2, ticks:{ stepSize:0.5 } } } } });
+          }
+  
+          const areaAgg = {}; data.questions.forEach((q,i)=>{ const v=values[i]; if(v==null) return; (areaAgg[q.area] ||= {sum:0,n:0}); areaAgg[q.area].sum+=v; areaAgg[q.area].n++; });
+          const areaLabels = Object.keys(areaAgg); const areaVals = areaLabels.map(a=> round2(areaAgg[a].sum/areaAgg[a].n));
+          const ctx2 = document.getElementById('chartAreas').getContext('2d'); if(chartAreas) chartAreas.destroy();
+          if(!areaVals.length) renderNoData(ctx2); else {
+            chartAreas = new Chart(ctx2,{ type:'radar', data:{ labels:areaLabels, datasets:[{label:'Média por Área (0–2)', data:areaVals}] }, options:{ responsive:true, maintainAspectRatio:false, scales:{ r:{ suggestedMin:0, suggestedMax:2 } } } });
+          }
+  
+          const ul = document.getElementById('comments'); ul.innerHTML='';
+          if(!data.comments || !data.comments.length){ ul.innerHTML='<li class="text-slate-500">Sem dados para os filtros seleccionados.</li>'; }
+          else { data.comments.forEach(c=>{ const li=document.createElement('li'); li.className='p-3 rounded-xl border'; const d=new Date(c.submitted_at).toLocaleString(); li.innerHTML='<div class="text-sm text-slate-500">'+d+'</div><div>'+(c.comment||'')+'</div>'; ul.appendChild(li); }); }
         }
-        const ul = document.getElementById('comments'); ul.innerHTML='';
-        if(!data.comments || !data.comments.length){ ul.innerHTML='<li class="text-slate-500">Sem dados para os filtros seleccionados.</li>'; }
-        else { data.comments.forEach(c=>{ const li=document.createElement('li'); li.className='p-3 rounded-xl border'; const d=new Date(c.submitted_at).toLocaleString(); li.innerHTML='<div class="text-sm text-slate-500">'+d+'</div><div>'+(c.comment||'')+'</div>'; ul.appendChild(li); }); }
-      }
-      document.getElementById('aplicar').addEventListener('click', load); load();
-      document.getElementById('exportExcel').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/excel?'+params(); });
-      document.getElementById('exportPDF').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/pdf?'+params(); });
-    </script>`;
-
-  res.send(renderPage('Relatório', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
-});
+        document.getElementById('aplicar').addEventListener('click', load); load();
+        document.getElementById('exportExcel').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/excel?'+params(); });
+        document.getElementById('exportPDF').addEventListener('click',e=>{ e.preventDefault(); window.location='/export/pdf?'+params(); });
+      </script>`;
+  
+    res.send(renderPage('Relatório', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
+  });
+  
 
 // === Helpers de Backup (coloque acima das rotas) ===
 const path = require('path');
