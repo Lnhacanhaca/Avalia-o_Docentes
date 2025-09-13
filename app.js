@@ -177,52 +177,136 @@ seedOnce();
 
 // ====== HELPERS ======
 function renderPage(title, content, extraHead = '', isAdmin = false) {
-  return `<!doctype html>
-<html lang="pt" class="h-full">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${title}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    .card{background:#fff;border-radius:1rem;box-shadow:0 8px 30px rgba(0,0,0,.06);border:1px solid #e2e8f0;padding:1.25rem}
-    .btn{display:inline-flex;align-items:center;gap:.5rem;padding:.5rem 1rem;border-radius:.75rem;font-weight:500}
-    .btn-primary{background:#0f172a;color:#fff}
-    .btn-ghost{background:#f1f5f9}
-    .kpi{text-align:left}
-    .kpi h3{font-size:.875rem;color:#64748b;text-align:left}
-    .kpi .v{font-size:1.75rem;font-weight:800;color:#0f172a;letter-spacing:-.01em}
-    canvas{max-height:260px !important}
-  </style>
-  ${extraHead}
-</head>
-<body class="min-h-full bg-slate-50 text-slate-900">
-  <div class="max-w-6xl mx-auto p-4 sm:p-8">
-    <header class="mb-6 sticky top-0 bg-slate-50/80 backdrop-blur z-30">
-      <div class="flex items-center justify-between py-2">
-        <a href="/" class="flex items-center gap-2">
-          <img src="/logo.png" alt="Logo" class="w-9 h-9 object-contain" onerror="this.style.display='none'"/>
-          <span class="font-semibold">ISPT · Avaliação Docente</span>
-        </a>
-        <nav class="text-sm flex gap-3 flex-wrap">
-          <a class="underline" href="/">Inquérito</a>
-          ${isAdmin ? '<a class="underline" href="/admin">Relatório</a>' : ''}
-          ${isAdmin ? '<a class="underline" href="/dashboard">Dashboard</a>' : ''}
-          ${isAdmin ? '<a class="underline" href="/importar">Importar</a>' : ''}
-          ${isAdmin ? '<a class="underline" href="/logout">Sair</a>' : '<a class="underline" href="/login">Entrar</a>'}
-        </nav>
+    return `<!doctype html>
+  <html lang="pt" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${title}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      .card{background:#fff;border-radius:1rem;box-shadow:0 8px 30px rgba(0,0,0,.06);border:1px solid #e2e8f0;padding:1.25rem}
+      .btn{display:inline-flex;align-items:center;gap:.5rem;padding:.5rem 1rem;border-radius:.75rem;font-weight:500}
+      .btn-primary{background:#0f172a;color:#fff}
+      .btn-ghost{background:#f1f5f9}
+      .kpi{text-align:left}
+      .kpi h3{font-size:.875rem;color:#64748b;text-align:left}
+      .kpi .v{font-size:1.75rem;font-weight:800;color:#0f172a;letter-spacing:-.01em}
+      canvas{max-height:260px !important}
+      /* Modal helpers */
+      .modal-open { overflow:hidden }
+    </style>
+    ${extraHead}
+  </head>
+  <body class="min-h-full bg-slate-50 text-slate-900">
+    <div class="max-w-6xl mx-auto p-4 sm:p-8">
+      <header class="mb-6 sticky top-0 bg-slate-50/80 backdrop-blur z-30">
+        <div class="flex items-center justify-between py-2">
+          <a href="/" class="flex items-center gap-2">
+            <img src="/logo.png" alt="Logo" class="w-9 h-9 object-contain" onerror="this.style.display='none'"/>
+            <span class="font-semibold">ISPT · Avaliação Docente</span>
+          </a>
+          <nav class="text-sm flex gap-3 flex-wrap">
+            <a class="underline" href="/">Inquérito</a>
+            ${isAdmin ? '<a class="underline" href="/admin">Relatório</a>' : ''}
+            ${isAdmin ? '<a class="underline" href="/dashboard">Dashboard</a>' : ''}
+            ${isAdmin ? '<a class="underline" href="/importar">Importar</a>' : ''}
+            ${isAdmin ? '<a class="underline" href="/logout">Sair</a>' : '<a class="underline" href="/login">Entrar</a>'}
+          </nav>
+        </div>
+      </header>
+      <main class="card">
+        <h1 class="text-2xl sm:text-3xl font-bold mb-4 text-left">${title}</h1>
+        ${content}
+      </main>
+      <footer class="mt-8 text-xs text-slate-500 text-center">ISPT · ${new Date().getFullYear()}</footer>
+    </div>
+  
+    <!-- Consentimento / Anonimato Modal -->
+    <div id="consentOverlay" class="fixed inset-0 bg-black/40 hidden items-center justify-center p-4 z-50">
+      <div class="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-200">
+        <div class="p-5 border-b border-slate-100">
+          <h2 class="text-lg font-semibold text-slate-900">Aviso de Anonimato e Consentimento</h2>
+        </div>
+        <div class="p-5 space-y-3 text-slate-700 text-sm leading-relaxed">
+          <p><b>Este inquérito é anónimo</b> e destina-se exclusivamente à melhoria pedagógica.</p>
+          <p>Não recolhemos qualquer identificação pessoal. As respostas são <b>agregadas</b> e os resultados apenas são apresentados quando existem <b>pelo menos 5 respostas (n≥5)</b> para proteger o anonimato.</p>
+          <p>O comentário é opcional. Evite incluir nomes ou elementos que identifiquem pessoas.</p>
+          <p>Ao prosseguir, declara que compreende e consente a recolha e tratamento dos dados nos termos aqui descritos.</p>
+        </div>
+        <div class="px-5 pb-5 pt-3 flex flex-wrap gap-2 justify-end">
+          <button id="consentDecline" class="btn btn-ghost">Cancelar</button>
+          <button id="consentAccept" class="btn btn-primary">Aceito e quero continuar</button>
+        </div>
       </div>
-    </header>
-    <main class="card">
-      <h1 class="text-2xl sm:text-3xl font-bold mb-4 text-left">${title}</h1>
-      ${content}
-    </main>
-    <footer class="mt-8 text-xs text-slate-500 text-center">ISPT · ${new Date().getFullYear()}</footer>
-  </div>
-</body>
-</html>`;
-}
+    </div>
+  
+    <script>
+      (function(){
+        const PATH = location.pathname;
+        const isSurveyArea = PATH === '/' || PATH === '/inquerito'; // mostra apenas no inquérito
+        const getCookie = (k) => document.cookie.split('; ').find(x=>x.startsWith(k+'='))?.split('=')[1];
+        const setCookieDays = (k,v,days=180) => {
+          const d = new Date(); d.setTime(d.getTime() + (days*24*60*60*1000));
+          document.cookie = k + '=' + v + '; expires=' + d.toUTCString() + '; path=/; SameSite=Lax';
+        };
+  
+        const overlay = document.getElementById('consentOverlay');
+        const btnAccept = document.getElementById('consentAccept');
+        const btnDecline = document.getElementById('consentDecline');
+  
+        function openModal(){
+          overlay.classList.remove('hidden');
+          overlay.classList.add('flex');
+          document.documentElement.classList.add('modal-open');
+        }
+        function closeModal(){
+          overlay.classList.add('hidden');
+          overlay.classList.remove('flex');
+          document.documentElement.classList.remove('modal-open');
+        }
+  
+        // Mostrar modal se necessário
+        if (isSurveyArea && getCookie('ispt_consent') !== '1') {
+          openModal();
+        }
+  
+        // Aceitar
+        btnAccept?.addEventListener('click', () => {
+          setCookieDays('ispt_consent', '1', 180);
+          closeModal();
+        });
+  
+        // Cancelar -> volta para home (se já estiver na home, só fecha)
+        btnDecline?.addEventListener('click', () => {
+          if (PATH !== '/') location.href = '/';
+          else closeModal();
+        });
+  
+        // Bloquear submissão do formulário do inquérito sem consentimento
+        document.addEventListener('submit', (e) => {
+          const form = e.target;
+          if (!form || !(form instanceof HTMLFormElement)) return;
+          // só bloquear no formulário de inquérito (tem action /inquerito ou /submit)
+          const action = (form.getAttribute('action')||'');
+          const isSurveyForm = action.includes('/inquerito') || action.includes('/submit');
+          if (isSurveyForm && getCookie('ispt_consent') !== '1') {
+            e.preventDefault();
+            openModal();
+          }
+        });
+  
+        // Se o utilizador tentar navegar para /inquerito de forma direta sem consentir
+        if (PATH === '/inquerito' && getCookie('ispt_consent') !== '1') {
+          openModal();
+        }
+      })();
+    </script>
+  </body>
+  </html>`;
+  }
+  
 
 function select(name, label, options, valueField = 'id', labelField = 'name') {
   const opts = options.map(o => `<option value="${o[valueField]}">${o[labelField]}</option>`).join('');
