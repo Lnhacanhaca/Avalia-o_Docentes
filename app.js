@@ -29,6 +29,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'ispt-admin';
 const LOGO_PATH = process.env.LOGO_PATH || 'logo.jpg';
 const RESPONDENTS_TARGET = Number(process.env.RESPONDENTS_TARGET || 0);
+const ANON = Number(process.env.ANON_THRESHOLD || 5);
 
 // ====== MIDDLEWARES ======
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -552,129 +553,298 @@ app.get('/logout', (req, res) => { res.clearCookie('ispt_admin'); res.redirect('
 
 // ====== HOME / INQUÉRITO ======
 app.get('/', (req, res) => {
-  const courses = db.prepare('SELECT * FROM course ORDER BY name').all();
-  const semesters = db.prepare('SELECT * FROM semester ORDER BY id').all();
-  const years = db.prepare('SELECT * FROM school_year ORDER BY name DESC').all();
-
-  const content = `
-    <form method="GET" action="/inquerito" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      ${select('course_id', 'Curso', courses)}
-      ${select('semester_id', 'Semestre/Período lectivo', semesters)}
-      <div class="sm:col-span-2">${select('school_year_id', 'Ano lectivo', years)}</div>
-      <div class="sm:col-span-2"><button class="btn btn-primary">Continuar</button></div>
-    </form>
-    <p class="text-sm text-slate-600 mt-4">Nota: se o mesmo docente leccionar várias disciplinas, preencha um inquérito por disciplina.</p>`;
-  res.send(renderPage('ISPT – Inquérito a Estudantes', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
-});
-
-app.get('/inquerito', (req, res) => {
-  const { course_id, semester_id, school_year_id } = req.query;
-  if (!course_id || !semester_id || !school_year_id) return res.redirect('/');
-
-  const teachRows = db.prepare(`
-    SELECT DISTINCT d.id as discipline_id, d.name as discipline_name
-    FROM teaching t
-    JOIN discipline d ON d.id = t.discipline_id
-    WHERE d.course_id = ? AND t.semester_id = ? AND t.school_year_id = ?
-    ORDER BY d.name
-  `).all(course_id, semester_id, school_year_id);
-
-  const teachMapRows = db.prepare(`
-    SELECT d.id as discipline_id, te.id as teacher_id, te.name as teacher_name
-    FROM teaching t
-    JOIN discipline d ON d.id = t.discipline_id
-    JOIN teacher te ON te.id = t.teacher_id
-    WHERE d.course_id = ? AND t.semester_id = ? AND t.school_year_id = ?
-    ORDER BY d.name, te.name
-  `).all(course_id, semester_id, school_year_id);
-
-  const teacherMap = {};
-  teachMapRows.forEach(r => {
-    teacherMap[r.discipline_id] = teacherMap[r.discipline_id] || [];
-    teacherMap[r.discipline_id].push({ id: r.teacher_id, name: r.teacher_name });
-  });
-
-  const questions = db.prepare('SELECT * FROM survey_question ORDER BY id').all();
-
-  const disciplines = teachRows.map(r => ({ id: r.discipline_id, name: r.discipline_name }));
-  const discSel = select('discipline_id', 'Disciplina', disciplines);
-
-  const teachSel = `
-    <label class="block mb-2 font-medium">Docente</label>
-    <select id="teacher_id" name="teacher_id" required class="w-full border rounded-xl p-2 mb-4" disabled>
-      <option value="" disabled selected>— seleccione —</option>
-    </select>
-    <script>
-      const TEACHER_MAP = ${JSON.stringify(teacherMap)};
-      document.addEventListener('DOMContentLoaded', () => {
-        const disc = document.querySelector('select[name="discipline_id"]');
-        const teacher = document.getElementById('teacher_id');
-        function fillTeachers(list){
-          teacher.innerHTML = '<option value="" disabled selected>— seleccione —</option>';
-          (list||[]).forEach(t => { const opt=document.createElement('option'); opt.value=t.id; opt.textContent=t.name; teacher.appendChild(opt); });
-          teacher.disabled = !(list && list.length);
-          teacher.classList.toggle('opacity-50', teacher.disabled);
-        }
-        disc.addEventListener('change', e => fillTeachers(TEACHER_MAP[e.target.value]||[]));
-      });
-    </script>`;
-
-  const turmaA = db.prepare("SELECT id, name FROM class_group WHERE name = 'Turma A'").get();
-  const turmaB = db.prepare("SELECT id, name FROM class_group WHERE name = 'Turma B'").get();
-  const posUnica = db.prepare("SELECT id, name FROM class_group WHERE name = 'Única Pós-laboral'").get();
-
-  const turnoSel = `
-    <label class="block mb-2 font-medium">Turno</label>
-    <select id="turno" name="turno" required class="w-full border rounded-xl p-2 mb-4">
-      <option value="" disabled selected>— seleccione —</option>
-      <option value="diurno">Diurno</option>
-      <option value="pos">Pós-laboral</option>
-    </select>`;
-
-  const turmaSel = `
-    <label class="block mb-2 font-medium">Turma</label>
-    <select id="class_group_id" name="class_group_id" required class="w-full border rounded-xl p-2 mb-4 opacity-50" disabled>
-      <option value="" disabled selected>— seleccione —</option>
-    </select>
-    <script>
-      const TURMA_A=${turmaA?turmaA.id:'null'}; const TURMA_B=${turmaB?turmaB.id:'null'}; const POS_UNICA=${posUnica?posUnica.id:'null'};
-      const TURMA_A_NAME=${JSON.stringify(turmaA?turmaA.name:'Turma A')};
-      const TURMA_B_NAME=${JSON.stringify(turmaB?turmaB.name:'Turma B')};
-      const POS_UNICA_NAME=${JSON.stringify(posUnica?posUnica.name:'Única Pós-laboral')};
-      document.addEventListener('DOMContentLoaded',()=>{
-        const turno=document.getElementById('turno'); const turma=document.getElementById('class_group_id');
-        function fill(opts){ turma.innerHTML='<option value="" disabled selected>— seleccione —</option>'; (opts||[]).forEach(o=>{ if(!o||!o.id) return; const op=document.createElement('option'); op.value=o.id; op.textContent=o.name; turma.appendChild(op);});
-          const dis=(opts||[]).length===0; turma.disabled=dis; turma.classList.toggle('opacity-50',dis); turma.classList.toggle('cursor-not-allowed',dis); }
-        const diurno=[TURMA_A?{id:TURMA_A,name:TURMA_A_NAME}:null, TURMA_B?{id:TURMA_B,name:TURMA_B_NAME}:null].filter(Boolean);
-        const pos=[POS_UNICA?{id:POS_UNICA,name:POS_UNICA_NAME}:null].filter(Boolean);
-        turno.addEventListener('change',e=>{ if(e.target.value==='diurno') fill(diurno); else if(e.target.value==='pos') fill(pos); else fill([]); });
-      });
-    </script>`;
-
-  const qHtml = questions.map(q => `
-    <div class="mb-4">
-      <label class="block mb-1 font-medium">${q.code}. ${q.text} <span class="text-xs text-slate-500">(0 = Nunca / 1 = Às vezes / 2 = Sempre)</span></label>
-      <div class="flex gap-2">
-        ${[0,1,2].map(v => `<label class=\"inline-flex items-center gap-2 border rounded-xl px-3 py-2\"><input type=\"radio\" name=\"q_${q.id}\" value=\"${v}\" required /> ${v}</label>`).join('')}
+    const courses   = db.prepare('SELECT * FROM course ORDER BY name').all();
+    const semesters = db.prepare('SELECT * FROM semester ORDER BY id').all();
+    const years     = db.prepare('SELECT * FROM school_year ORDER BY name DESC').all();
+  
+    // helpers
+    const options = (arr, v='id', l='name') =>
+      arr.map(o => `<option value="${o[v]}">${o[l]}</option>`).join('');
+  
+    const content = `
+    <div class="grid md:grid-cols-3 gap-6">
+      <div class="md:col-span-2">
+        <form id="formStart" method="GET" action="/inquerito" novalidate class="space-y-6">
+          <!-- Título & subtítulo -->
+          <div>
+            <h2 class="text-xl font-semibold mb-1">Começar um novo inquérito</h2>
+            <p class="text-sm text-slate-600">Preencha os campos abaixo. Todos são obrigatórios.</p>
+          </div>
+  
+          <!-- Campos alinhados (label à esquerda, campo à direita) -->
+          <div class="grid grid-cols-12 items-center gap-3">
+            <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Curso</label>
+            <div class="col-span-12 sm:col-span-8">
+              <select name="course_id" required class="w-full border rounded-xl p-2 focus:outline-none focus:ring-2 focus:ring-slate-300">
+                <option value="">— seleccione —</option>
+                ${options(courses)}
+              </select>
+              <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="course_id">Seleccione um curso.</p>
+            </div>
+          </div>
+  
+          <div class="grid grid-cols-12 items-center gap-3">
+            <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Semestre/Período</label>
+            <div class="col-span-12 sm:col-span-8">
+              <select name="semester_id" required class="w-full border rounded-xl p-2 focus:outline-none focus:ring-2 focus:ring-slate-300">
+                <option value="">— seleccione —</option>
+                ${options(semesters)}
+              </select>
+              <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="semester_id">Seleccione um semestre/período.</p>
+            </div>
+          </div>
+  
+          <div class="grid grid-cols-12 items-center gap-3">
+            <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Ano lectivo</label>
+            <div class="col-span-12 sm:col-span-8">
+              <!-- campo mais curto e moderno -->
+              <div class="w-44 sm:w-56">
+                <select name="school_year_id" required class="w-full border rounded-xl p-2 focus:outline-none focus:ring-2 focus:ring-slate-300">
+                  <option value="">— seleccione —</option>
+                  ${options(years)}
+                </select>
+              </div>
+              <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="school_year_id">Seleccione o ano lectivo.</p>
+            </div>
+          </div>
+  
+          <div class="flex flex-wrap gap-2">
+            <button class="btn btn-primary" type="submit">Continuar</button>
+            <button class="btn btn-ghost" type="reset">Limpar</button>
+          </div>
+  
+          <p class="text-xs text-slate-500">
+            Nota: se o mesmo docente leccionar várias disciplinas, preencha um inquérito por disciplina.
+          </p>
+        </form>
       </div>
-    </div>`).join('');
-
-  const content = `
-    <form method="POST" action="/submit" class="space-y-4">
+  
+      <!-- Lateral com “dicas/benefícios” -->
+      <aside class="space-y-3">
+        <div class="card">
+          <h3 class="font-semibold mb-1">Anonimato garantido</h3>
+          <p class="text-sm text-slate-600 leading-relaxed">
+            Os resultados só são exibidos quando houver pelo menos ${ANON} respostas (n≥${ANON}).
+          </p>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold mb-1">Escala de respostas</h3>
+          <p class="text-sm text-slate-600">0 (Nunca), 1 (Às vezes), 2 (Sempre).</p>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold mb-1">Duração</h3>
+          <p class="text-sm text-slate-600">O questionário é breve (≈2–3 minutos).</p>
+        </div>
+      </aside>
+    </div>
+  
+    <script>
+      (function(){
+        const form = document.getElementById('formStart');
+        const showError = (name, msg) => {
+          const small = form.querySelector('[data-error-for="'+name+'"]');
+          if (small) { small.textContent = msg; small.classList.remove('hidden'); }
+        };
+        const hideError = (name) => {
+          const small = form.querySelector('[data-error-for="'+name+'"]');
+          if (small) small.classList.add('hidden');
+        };
+        const fields = ['course_id','semester_id','school_year_id'];
+        fields.forEach(n => {
+          const el = form.querySelector('[name="'+n+'"]');
+          el?.addEventListener('change', () => hideError(n));
+        });
+  
+        form.addEventListener('submit', (e)=>{
+          let firstInvalid = null;
+          fields.forEach(n => {
+            const el = form.querySelector('[name="'+n+'"]');
+            if (el && !el.value) {
+              showError(n, 'Campo obrigatório.');
+              if (!firstInvalid) firstInvalid = el;
+            }
+          });
+          if (firstInvalid) { e.preventDefault(); firstInvalid.focus(); }
+        });
+      })();
+    </script>
+    `;
+  
+    res.send(renderPage('ISPT – Inquérito a Estudantes', content, '', req.cookies?.role || (req.cookies?.ispt_admin==='1')));
+  });
+  
+  app.get('/inquerito', (req, res) => {
+    const { course_id, semester_id, school_year_id } = req.query;
+    if (!course_id || !semester_id || !school_year_id) return res.redirect('/');
+  
+    const teachRows = db.prepare(`
+      SELECT DISTINCT d.id as discipline_id, d.name as discipline_name
+      FROM teaching t
+      JOIN discipline d ON d.id = t.discipline_id
+      WHERE d.course_id = ? AND t.semester_id = ? AND t.school_year_id = ?
+      ORDER BY d.name
+    `).all(course_id, semester_id, school_year_id);
+  
+    const teachMapRows = db.prepare(`
+      SELECT d.id as discipline_id, te.id as teacher_id, te.name as teacher_name
+      FROM teaching t
+      JOIN discipline d ON d.id = t.discipline_id
+      JOIN teacher te ON te.id = t.teacher_id
+      WHERE d.course_id = ? AND t.semester_id = ? AND t.school_year_id = ?
+      ORDER BY d.name, te.name
+    `).all(course_id, semester_id, school_year_id);
+  
+    const teacherMap = {};
+    teachMapRows.forEach(r => {
+      (teacherMap[r.discipline_id] ||= []).push({ id: r.teacher_id, name: r.teacher_name });
+    });
+  
+    const questions = db.prepare('SELECT * FROM survey_question ORDER BY id').all();
+  
+    const disciplines = teachRows.map(r => ({ id: r.discipline_id, name: r.discipline_name }));
+  
+    const content = `
+    <form id="formSurvey" method="POST" action="/submit" novalidate class="space-y-6">
       <input type="hidden" name="course_id" value="${course_id}" />
       <input type="hidden" name="semester_id" value="${semester_id}" />
       <input type="hidden" name="school_year_id" value="${school_year_id}" />
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">${discSel}${teachSel}${turnoSel}${turmaSel}</div>
-      <hr class="my-4" />
-      <h2 class="text-xl font-semibold mb-2">Questões</h2>
-      ${qHtml}
-      <label class="block mb-2 font-medium">Comentários (opcional)</label>
-      <textarea name="comment" class="w-full border rounded-xl p-2" rows="4" placeholder="Sugestões, críticas construtivas, elogios..."></textarea>
-      <button class="btn btn-primary">Submeter</button>
-    </form>`;
-
-  res.send(renderPage('Responder Inquérito', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
-});
+  
+      <div class="space-y-4">
+        <h2 class="text-xl font-semibold">Identificação do inquérito</h2>
+  
+        <div class="grid grid-cols-12 items-center gap-3">
+          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Disciplina</label>
+          <div class="col-span-12 sm:col-span-8">
+            <select name="discipline_id" required class="w-full border rounded-xl p-2">
+              <option value="">— seleccione —</option>
+              ${disciplines.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}
+            </select>
+            <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="discipline_id">Seleccione a disciplina.</p>
+          </div>
+        </div>
+  
+        <div class="grid grid-cols-12 items-center gap-3">
+          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Docente</label>
+          <div class="col-span-12 sm:col-span-8">
+            <select id="teacher_id" name="teacher_id" required class="w-full border rounded-xl p-2 opacity-50 cursor-not-allowed" disabled>
+              <option value="">— seleccione —</option>
+            </select>
+            <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="teacher_id">Seleccione o docente.</p>
+          </div>
+        </div>
+  
+        <div class="grid grid-cols-12 items-center gap-3">
+          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Turno</label>
+          <div class="col-span-12 sm:col-span-8">
+            <select id="turno" name="turno" required class="w-full border rounded-xl p-2">
+              <option value="">— seleccione —</option>
+              <option value="diurno">Diurno</option>
+              <option value="pos">Pós-laboral</option>
+            </select>
+            <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="turno">Seleccione o turno.</p>
+          </div>
+        </div>
+  
+        <div class="grid grid-cols-12 items-center gap-3">
+          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Turma</label>
+          <div class="col-span-12 sm:col-span-8">
+            <select id="class_group_id" name="class_group_id" required class="w-full border rounded-xl p-2 opacity-50 cursor-not-allowed" disabled>
+              <option value="">— seleccione —</option>
+            </select>
+            <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="class_group_id">Seleccione a turma.</p>
+          </div>
+        </div>
+      </div>
+  
+      <hr class="my-2"/>
+  
+      <div class="space-y-3">
+        <h2 class="text-xl font-semibold">Questões</h2>
+        ${questions.map(q => `
+          <div class="border rounded-xl p-3">
+            <label class="block mb-2 font-medium">
+              ${q.code}. ${q.text}
+              <span class="text-xs text-slate-500">(0 = Nunca / 1 = Às vezes / 2 = Sempre)</span>
+            </label>
+            <div class="flex gap-2 flex-wrap">
+              ${[0,1,2].map(v => `
+                <label class="inline-flex items-center gap-2 border rounded-xl px-3 py-2">
+                  <input type="radio" name="q_${q.id}" value="${v}" required />
+                  ${v}
+                </label>`).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+  
+      <div>
+        <label class="block mb-2 font-medium">Comentários (opcional)</label>
+        <textarea name="comment" class="w-full border rounded-xl p-3" rows="4" placeholder="Sugestões, críticas construtivas, elogios..."></textarea>
+        <p class="text-xs text-slate-500 mt-1">Evite incluir nomes ou dados pessoais.</p>
+      </div>
+  
+      <div class="flex gap-2">
+        <button class="btn btn-primary">Submeter</button>
+        <a href="/" class="btn btn-ghost">Cancelar</a>
+      </div>
+    </form>
+  
+    <script>
+      (function(){
+        // preencher docentes conforme disciplina
+        const TEACHER_MAP = ${JSON.stringify(teacherMap)};
+        const disc = document.querySelector('select[name="discipline_id"]');
+        const teacher = document.getElementById('teacher_id');
+        function fillTeachers(list){
+          teacher.innerHTML = '<option value="">— seleccione —</option>';
+          (list||[]).forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.id; opt.textContent = t.name;
+            teacher.appendChild(opt);
+          });
+          const dis = !(list && list.length);
+          teacher.disabled = dis;
+          teacher.classList.toggle('opacity-50', dis);
+          teacher.classList.toggle('cursor-not-allowed', dis);
+        }
+        disc.addEventListener('change', e => fillTeachers(TEACHER_MAP[e.target.value]||[]));
+  
+        // preencher turmas conforme turno
+        const TURMA_A = db.prepare("SELECT id FROM class_group WHERE name='Turma A'").get()?.id || null;
+        const TURMA_B = db.prepare("SELECT id FROM class_group WHERE name='Turma B'").get()?.id || null;
+        const POS_UNI = db.prepare("SELECT id FROM class_group WHERE name='Única Pós-laboral'").get()?.id || null;
+      })();
+    </script>
+  
+    <script>
+      // Validação simples
+      (function(){
+        const form = document.getElementById('formSurvey');
+        function err(name, show, msg){
+          const el = form.querySelector('[data-error-for="'+name+'"]');
+          if (!el) return;
+          el.textContent = msg || 'Campo obrigatório.';
+          el.classList.toggle('hidden', !show);
+        }
+        form.addEventListener('submit', (e)=>{
+          const required = ['discipline_id','teacher_id','turno','class_group_id'];
+          let first = null;
+          required.forEach(n=>{
+            const f = form.querySelector('[name="'+n+'"]');
+            if (f && !f.value){
+              err(n, true);
+              if (!first) first = f;
+            } else err(n, false);
+          });
+          if (first){ e.preventDefault(); first.focus(); }
+        });
+      })();
+    </script>
+    `;
+  
+    res.send(renderPage('Responder Inquérito', content, '', req.cookies?.role || (req.cookies?.ispt_admin==='1')));
+  });
+  
 
 // ====== SUBMISSÃO ======
 app.post('/submit', (req, res) => {
