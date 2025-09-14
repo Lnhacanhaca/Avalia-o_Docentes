@@ -1123,6 +1123,153 @@ app.get('/importar', requireAuth, (req, res) => {
   res.send(renderPage('Importar / Backup / Restauro', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
 });
 
+// ====== IMPORTAÇÃO: POST /importar ======
+app.post('/importar', requireAuth, upload.single('file'), async (req, res) => {
+    try {
+      // só Admin pode importar (se tiver roles, troque para requireRole(['admin']))
+      const role = req.cookies?.role || null;
+      if (role !== 'admin' && req.cookies?.ispt_admin !== '1') {
+        const html = `
+          <div class="text-center space-y-2">
+            <h2 class="text-xl font-semibold">Acesso negado (403)</h2>
+            <p class="text-slate-600">O seu perfil não tem permissões para esta área.</p>
+            <a href="/" class="btn btn-primary mt-2">Voltar ao início</a>
+          </div>`;
+        return res.status(403).send(renderPage('Acesso negado', html, '', role || (req.cookies?.ispt_admin==='1')));
+      }
+  
+      if (!req.file) {
+        return res.send(renderPage('Importar Excel', `<p class="text-red-600">Selecione um ficheiro .xlsx.</p><a class="underline" href="/importar">Voltar</a>`, '', role));
+      }
+  
+      const wipeAll = req.body.wipe_all === 'on';
+  
+      // Ler Excel da memória
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.file.buffer);
+  
+      const getSheet = (name) => wb.worksheets.find(ws => (ws.name || '').toLowerCase() === name);
+      const shCursos       = getSheet('cursos');
+      const shDocentes     = getSheet('docentes');
+      const shDisciplinas  = getSheet('disciplinas');
+      const shLeccionacao  = getSheet('leccionacao');
+  
+      if (!shCursos || !shDocentes || !shDisciplinas || !shLeccionacao) {
+        const msg = `Faltam folhas obrigatórias: cursos, docentes, disciplinas, leccionacao.`;
+        return res.send(renderPage('Importar Excel', `<p class="text-red-600">${msg}</p><a class="underline" href="/importar">Voltar</a>`, '', role));
+      }
+  
+      // Transação
+      const trx = db.transaction(() => {
+        if (wipeAll) {
+          db.exec(`
+            DELETE FROM survey_answer;
+            DELETE FROM survey_response;
+            DELETE FROM teaching;
+            DELETE FROM discipline;
+            DELETE FROM teacher;
+            DELETE FROM course;
+            -- tabelas auxiliares ficam como estão (semester, school_year, class_group, survey_question)
+          `);
+        }
+  
+        // Helpers
+        const insCourse   = db.prepare('INSERT OR IGNORE INTO course (name) VALUES (?)');
+        const insTeacher  = db.prepare('INSERT OR IGNORE INTO teacher (name) VALUES (?)');
+        const getCourseId = db.prepare('SELECT id FROM course WHERE name=?');
+        const getTeachId  = db.prepare('SELECT id FROM teacher WHERE name=?');
+        const insDisc     = db.prepare('INSERT OR IGNORE INTO discipline (course_id, name) VALUES (?,?)');
+        const getDisc     = db.prepare('SELECT id FROM discipline WHERE course_id=? AND name=?');
+  
+        // Cursos (coluna: name)
+        shCursos.eachRow((row, idx) => {
+          if (idx === 1) return; // header
+          const name = String(row.getCell(1).value || '').trim();
+          if (name) insCourse.run(name);
+        });
+  
+        // Docentes (coluna: name)
+        shDocentes.eachRow((row, idx) => {
+          if (idx === 1) return;
+          const name = String(row.getCell(1).value || '').trim();
+          if (name) insTeacher.run(name);
+        });
+  
+        // Disciplinas (colunas: course, name)
+        shDisciplinas.eachRow((row, idx) => {
+          if (idx === 1) return;
+          const courseName = String(row.getCell(1).value || '').trim();
+          const discName   = String(row.getCell(2).value || '').trim();
+          if (!courseName || !discName) return;
+          insCourse.run(courseName); // garante curso
+          const course = getCourseId.get(courseName);
+          if (course?.id) insDisc.run(course.id, discName);
+        });
+  
+        // Leccionação (colunas: course, discipline, teacher, year, semester, class_group)
+        const insTeach = db.prepare('INSERT OR IGNORE INTO teaching (teacher_id, discipline_id, semester_id, school_year_id, class_group_id) VALUES (?,?,?,?,?)');
+  
+        const getSemester = db.prepare('SELECT id FROM semester WHERE name=?');
+        const getYear     = db.prepare('SELECT id FROM school_year WHERE name=?');
+        const getClass    = db.prepare('SELECT id FROM class_group WHERE name=?');
+  
+        shLeccionacao.eachRow((row, idx) => {
+          if (idx === 1) return;
+          const courseName = String(row.getCell(1).value || '').trim();
+          const discName   = String(row.getCell(2).value || '').trim();
+          const teachName  = String(row.getCell(3).value || '').trim();
+          const yearName   = String(row.getCell(4).value || '').trim();
+          const semName    = String(row.getCell(5).value || '').trim();
+          const className  = String(row.getCell(6).value || '').trim();
+  
+          if (!courseName || !discName || !teachName || !semName) return;
+  
+          // garantir curso/disciplinas/docentes
+          insCourse.run(courseName);
+          insTeacher.run(teachName);
+          const course = getCourseId.get(courseName);
+          if (!course?.id) return;
+  
+          insDisc.run(course.id, discName);
+          const disc = getDisc.get(course.id, discName);
+          const teach = getTeachId.get(teachName);
+  
+          const semester = getSemester.get(semName);
+          const year     = yearName ? getYear.get(yearName) : null;
+          const klass    = className ? getClass.get(className) : null;
+  
+          if (teach?.id && disc?.id && semester?.id) {
+            insTeach.run(
+              teach.id,
+              disc.id,
+              semester.id,
+              year?.id || null,
+              klass?.id || null
+            );
+          }
+        });
+      });
+  
+      trx(); // executa
+  
+      const ok = `
+        <div class="space-y-2">
+          <h2 class="text-xl font-semibold">Importação concluída</h2>
+          <p class="text-slate-600">Os dados do Excel foram processados com sucesso.</p>
+          <div class="flex gap-2">
+            <a class="btn btn-primary" href="/importar">Voltar</a>
+            <a class="btn btn-ghost" href="/admin">Ir ao Relatório</a>
+          </div>
+        </div>`;
+      return res.send(renderPage('Importar Excel', ok, '', role || (req.cookies?.ispt_admin==='1')));
+    } catch (e) {
+      const errHtml = `
+        <p class="text-red-600 mb-2">Falha na importação: ${e.message}</p>
+        <a class="underline" href="/importar">Voltar</a>`;
+      return res.send(renderPage('Erro na importação', errHtml, '', req.cookies?.role || (req.cookies?.ispt_admin==='1')));
+    }
+  });
+  
 // ====== BACKUP: cria .sqlite e .sqlite.gz com timestamp ======
 app.post('/backup', requireAuth, async (req, res) => {
     try {
