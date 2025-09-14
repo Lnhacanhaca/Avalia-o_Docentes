@@ -529,27 +529,131 @@ function requireAuth(req, res, next) {
 
 // ====== AUTENTICAÇÃO ======
 app.get('/login', (req, res) => {
-  const html = `
-    <form method="POST" action="/login" class="space-y-4">
-      <label class="block mb-2 font-medium">Palavra-passe de administrador</label>
-      <input type="password" name="password" class="w-full border rounded-xl p-2" required />
-      <button class="btn btn-primary">Entrar</button>
-    </form>`;
-  res.send(renderPage('Iniciar sessão', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
-});
+    const err = typeof req.query.e === 'string' && req.query.e.trim() ? req.query.e : '';
+  
+    const html = `
+    <div class="min-h-[70vh] flex items-center justify-center">
+      <div class="w-full max-w-sm">
+        <div class="card p-6">
+          <div class="text-center mb-5">
+            <div class="mx-auto w-14 h-14 rounded-2xl bg-slate-900 text-white flex items-center justify-center shadow">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M7 10V7a5 5 0 1 1 10 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                <rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" stroke-width="2"/>
+                <circle cx="12" cy="15" r="1.8" fill="currentColor"/>
+              </svg>
+            </div>
+            <h2 class="text-xl font-semibold mt-3">Iniciar sessão</h2>
+            <p class="text-sm text-slate-500">Acesso restrito a perfis autorizados.</p>
+          </div>
+  
+          <form id="loginForm" method="POST" action="/login" novalidate class="space-y-4">
+            <div>
+              <label for="pwd" class="block text-sm font-medium text-slate-700 mb-1">Palavra-passe</label>
+              <div class="relative">
+                <input
+                  type="password"
+                  id="pwd"
+                  name="password"
+                  required
+                  minlength="6"
+                  placeholder="••••••••"
+                  class="w-full border rounded-xl p-3 pr-10 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  aria-invalid="${err ? 'true' : 'false'}"
+                  aria-describedby="pwdErr"
+                />
+                <button type="button" id="togglePwd"
+                  class="absolute inset-y-0 right-2 my-auto px-2 rounded-md text-slate-500 hover:text-slate-700"
+                  aria-label="Mostrar/ocultar palavra-passe">
+                  <svg id="eyeOpen" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" stroke="currentColor" stroke-width="2"/>
+                    <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+                  </svg>
+                  <svg id="eyeClosed" class="hidden" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M3 3l18 18M10.6 10.6A3 3 0 0 0 12 15a3 3 0 0 0 3-3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M2 12s3.5-7 10-7c2.2 0 4 .7 5.5 1.8M22 12s-3.5 7-10 7c-2.2 0-4-.7-5.5-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </button>
+              </div>
+              <p id="pwdErr" class="mt-2 text-xs ${err ? 'text-rose-600' : 'text-transparent'}">${err || 'erro'}</p>
+            </div>
+  
+            <div class="flex items-center justify-between">
+              <label class="inline-flex items-center gap-2 text-sm">
+                <input type="checkbox" name="remember" class="rounded" />
+                <span>Manter sessão</span>
+              </label>
+              <span class="text-sm text-slate-400">Precisa de ajuda?</span>
+            </div>
+  
+            <button class="btn btn-primary w-full">Entrar</button>
+          </form>
+        </div>
+        <p class="text-center text-xs text-slate-500 mt-3">ISPT · Avaliação Docente</p>
+      </div>
+    </div>
+  
+    <script>
+      (function(){
+        const form = document.getElementById('loginForm');
+        const pwd  = document.getElementById('pwd');
+        const err  = document.getElementById('pwdErr');
+        const toggle = document.getElementById('togglePwd');
+        const eyeOpen = document.getElementById('eyeOpen');
+        const eyeClosed = document.getElementById('eyeClosed');
+  
+        toggle?.addEventListener('click', ()=>{
+          const isPass = pwd.type === 'password';
+          pwd.type = isPass ? 'text' : 'password';
+          eyeOpen.classList.toggle('hidden', !isPass);
+          eyeClosed.classList.toggle('hidden', isPass);
+          pwd.focus();
+        });
+  
+        form.addEventListener('submit', (e)=>{
+          if (!pwd.value || pwd.value.length < 3) {
+            e.preventDefault();
+            err.textContent = 'Introduza a palavra-passe.';
+            err.classList.remove('text-transparent');
+            err.classList.add('text-rose-600');
+            pwd.focus();
+          }
+        });
+      })();
+    </script>
+    `;
+  
+    res.send(
+      renderPage('Iniciar sessão', html, '', req.cookies?.role || (req.cookies?.ispt_admin === '1'))
+    );
+  });
+  
 
-app.post('/login', (req, res) => {
-  const { password } = req.body;
-  if (password === ADMIN_PASSWORD) {
-    res.cookie('ispt_admin', '1', { httpOnly: true, sameSite: 'lax' });
-    return res.redirect('/admin');
-  }
-  const html = `<p class="mb-4 text-red-600">Palavra-passe inválida.</p>
-  <a href="/login" class="underline">Tentar novamente</a>`;
-  res.send(renderPage('Erro de autenticação', html, '', (req.cookies && req.cookies.ispt_admin==='1')));
-});
-
-app.get('/logout', (req, res) => { res.clearCookie('ispt_admin'); res.redirect('/'); });
+  app.post('/login', (req, res) => {
+    const { password, remember } = req.body;
+  
+    // aqui mantém a sua lógica atual de autenticação
+    if (password === ADMIN_PASSWORD) {
+      // marca como admin (ou use o seu sistema de papéis)
+      res.cookie('ispt_admin', '1', {
+        httpOnly: true,
+        sameSite: 'lax',
+        // “remember” opcional: 30 dias
+        ...(remember ? { maxAge: 30 * 24 * 60 * 60 * 1000 } : {})
+      });
+      // se já usa cookies de role, guarde também:
+      res.cookie('role', 'admin', {
+        httpOnly: true,
+        sameSite: 'lax',
+        ...(remember ? { maxAge: 30 * 24 * 60 * 60 * 1000 } : {})
+      });
+      return res.redirect('/admin');
+    }
+  
+    // devolve ao /login com mensagem de erro
+    return res.redirect('/login?e=' + encodeURIComponent('Palavra-passe inválida.'));
+  });
+  
 
 // ====== HOME / INQUÉRITO ======
 app.get('/', (req, res) => {
