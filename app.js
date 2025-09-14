@@ -653,6 +653,25 @@ app.get('/login', (req, res) => {
     // devolve ao /login com mensagem de erro
     return res.redirect('/login?e=' + encodeURIComponent('Palavra-passe inválida.'));
   });
+
+  // ====== LOGOUT ======
+app.get('/logout', (req, res) => {
+    try {
+      res.clearCookie('role',        { path: '/', sameSite: 'lax' });
+      res.clearCookie('ispt_admin',  { path: '/', sameSite: 'lax' });
+    } catch (_) {}
+    // opcional: também zere o banner de consentimento, se quiser
+    // res.clearCookie('ispt_consent', { path: '/', sameSite: 'lax' });
+  
+    // volta ao login (ou à página inicial, se preferir)
+    return res.redirect('/login');
+  });
+
+  app.post('/logout', (req, res) => {
+    res.clearCookie('role',       { path: '/', sameSite: 'lax' });
+    res.clearCookie('ispt_admin', { path: '/', sameSite: 'lax' });
+    return res.redirect('/login');
+  });
   
 
 // ====== HOME / INQUÉRITO ======
