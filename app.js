@@ -18,7 +18,15 @@ const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const dayjs = require('dayjs');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 require('dotenv').config();
+
+
+
+
+
+
 
 // ====== APP & DB ======
 const app = express();
@@ -527,6 +535,20 @@ function requireAuth(req, res, next) {
   return res.redirect('/login');
 }
 
+// Proteção (ajuste para o seu middleware real)
+function requireAuth(req, res, next) {
+  const role = req.cookies?.role || (req.cookies?.ispt_admin === '1' ? 'admin' : null);
+  if (!role) {
+    return res.status(401).send(`
+      <div style="max-width:640px;margin:4rem auto;font-family:sans-serif;text-align:center">
+        <h1>Acesso restrito</h1>
+        <p>Inicie sessão para continuar.</p>
+        <p><a href="/login">Iniciar sessão</a></p>
+      </div>
+    `);
+  }
+  next();
+}
 // ====== AUTENTICAÇÃO ======
 app.get('/login', (req, res) => {
     const err = typeof req.query.e === 'string' && req.query.e.trim() ? req.query.e : '';
@@ -1477,7 +1499,7 @@ app.get('/api/disciplinas', (req, res) => {
   
 
 // === Helpers de Backup (coloque acima das rotas) ===
-const path = require('path');
+
 
 const zlib = require('zlib');
 
@@ -1797,6 +1819,127 @@ app.post('/backup/cleanup', requireAuth, (req, res) => {
     res.download(full, file);
   });
   
+
+// POST /restore — Restauro via ATTACH (robusto)
+app.post('/restore', requireAuth, upload.single('backup'), (req, res) => {
+  // util p/ devolver uma página com o renderPage existente
+  const sendPage = (title, html, status=200) =>
+    res.status(status).send(renderPage(title, html, '', req.cookies?.role || (req.cookies?.ispt_admin==='1')));
+
+  // util p/ escapar o caminho no SQL literal (ATTACH às vezes falha com bind)
+  const sqlQuote = s => `'${String(s).replace(/'/g, "''")}'`;
+
+  let tmpPath = null;
+  let attached = false;
+
+  try {
+    if (!req.file || !req.file.buffer?.length) {
+      throw new Error('Nenhum ficheiro recebido.');
+    }
+
+    // 1) Gravar o upload num ficheiro temporário
+    tmpPath = path.join(os.tmpdir(), `restore_${Date.now()}.sqlite`);
+    fs.writeFileSync(tmpPath, req.file.buffer);
+
+    // 2) Tentar ATTACH (usando literal com escaping — mais compatível)
+    db.exec(`ATTACH DATABASE ${sqlQuote(tmpPath)} AS restore;`);
+    attached = true;
+
+    // 3) Verificar se o attach realmente funcionou (database_list)
+    const dblist = db.prepare('PRAGMA database_list;').all();
+    const hasRestore = dblist.some(r => String(r.name).toLowerCase() === 'restore');
+    if (!hasRestore) {
+      throw new Error('Não foi possível anexar o ficheiro (ATTACH falhou).');
+    }
+
+    // 4) Descobrir tabelas disponíveis no backup (sqlite_schema OU sqlite_master)
+    let tables = [];
+    try {
+      tables = db.prepare(
+        "SELECT name FROM restore.sqlite_schema WHERE type='table';"
+      ).all().map(r => r.name);
+    } catch (_) {
+      try {
+        tables = db.prepare(
+          "SELECT name FROM restore.sqlite_master WHERE type='table';"
+        ).all().map(r => r.name);
+      } catch (__) {
+        throw new Error('Falha a ler o esquema do ficheiro anexado (sqlite_schema/sqlite_master). O ficheiro é um SQLite válido?');
+      }
+    }
+
+    // 5) Funções utilitárias
+    const hasTable = (t) => tables.includes(t);
+    const copyIfExists = (t) => {
+      if (hasTable(t)) db.exec(`INSERT INTO ${t} SELECT * FROM restore.${t};`);
+    };
+
+    // 6) Copiar dentro de uma transação
+    db.transaction(() => {
+      db.exec('PRAGMA foreign_keys = OFF;');
+
+      // Limpar tudo primeiro, se marcado
+      if (req.body.wipe_all === 'on') {
+        db.exec(`
+          DELETE FROM survey_answer;
+          DELETE FROM survey_response;
+          DELETE FROM teaching;
+          DELETE FROM discipline;
+          DELETE FROM teacher;
+          DELETE FROM course;
+          DELETE FROM school_year;
+          DELETE FROM class_group;
+          DELETE FROM semester;
+          DELETE FROM survey_question;
+        `);
+      }
+
+      // Ordem segura: bases -> relacionamentos -> dados recolhidos
+      // (só copia se existir no backup)
+      ['course','semester','school_year','class_group','teacher','discipline','survey_question'].forEach(copyIfExists);
+      ['teaching'].forEach(copyIfExists);
+      ['survey_response','survey_answer'].forEach(copyIfExists);
+
+      db.exec('PRAGMA foreign_keys = ON;');
+    })();
+
+    // 7) Sucesso
+    const ok = `
+      <div class="text-center space-y-2">
+        <h2 class="text-xl font-semibold">Restauro concluído com sucesso</h2>
+        <p class="text-slate-600">Os dados foram restaurados a partir do ficheiro selecionado.</p>
+        <div class="mt-3 flex gap-2 justify-center">
+          <a class="btn btn-primary" href="/admin">Ver relatório</a>
+          <a class="btn btn-ghost" href="/importar">Voltar</a>
+        </div>
+      </div>`;
+    return sendPage('Restauro concluído', ok, 200);
+
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    const err = `
+      <div class="text-center space-y-2">
+        <h2 class="text-xl font-semibold text-rose-600">Erro no restauro</h2>
+        <p class="text-slate-600">${msg}</p>
+        <ul class="text-xs text-slate-500 mt-2 space-y-1">
+          <li>• Verifique se o ficheiro é uma base de dados SQLite válida exportada deste sistema.</li>
+          <li>• Tente novamente e, se possível, marque “Limpar todos os dados antes de restaurar”.</li>
+        </ul>
+        <div class="mt-3">
+          <a class="btn btn-ghost" href="/importar">Voltar</a>
+        </div>
+      </div>`;
+    return sendPage('Erro no restauro', err, 400);
+
+  } finally {
+    // 8) DETACH + apagar temporário (mesmo com erro)
+    try { if (attached) db.exec('DETACH DATABASE restore;'); } catch {}
+    try { if (tmpPath && fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+  }
+});
+
+
+
 
 // ====== EXPORT: EXCEL ======
 app.get('/export/excel', requireAuth, async (req, res) => {
