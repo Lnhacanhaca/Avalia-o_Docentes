@@ -677,6 +677,7 @@ app.get('/', (req, res) => {
     const { course_id, semester_id, school_year_id } = req.query;
     if (!course_id || !semester_id || !school_year_id) return res.redirect('/');
   
+    // Disciplinas disponíveis para o filtro recebido
     const teachRows = db.prepare(`
       SELECT DISTINCT d.id as discipline_id, d.name as discipline_name
       FROM teaching t
@@ -685,6 +686,7 @@ app.get('/', (req, res) => {
       ORDER BY d.name
     `).all(course_id, semester_id, school_year_id);
   
+    // Mapa Disciplina -> Docentes
     const teachMapRows = db.prepare(`
       SELECT d.id as discipline_id, te.id as teacher_id, te.name as teacher_name
       FROM teaching t
@@ -699,12 +701,18 @@ app.get('/', (req, res) => {
       (teacherMap[r.discipline_id] ||= []).push({ id: r.teacher_id, name: r.teacher_name });
     });
   
+    // Perguntas
     const questions = db.prepare('SELECT * FROM survey_question ORDER BY id').all();
+  
+    // Repor preenchimento automático de Turmas (como tinhas antes), mas calculado no servidor
+    const turmaA   = db.prepare("SELECT id, name FROM class_group WHERE name = 'Turma A'").get();
+    const turmaB   = db.prepare("SELECT id, name FROM class_group WHERE name = 'Turma B'").get();
+    const posUnica = db.prepare("SELECT id, name FROM class_group WHERE name = 'Única Pós-laboral'").get();
   
     const disciplines = teachRows.map(r => ({ id: r.discipline_id, name: r.discipline_name }));
   
     const content = `
-    <form id="formSurvey" method="POST" action="/submit" novalidate class="space-y-6">
+    <form id="formSurvey" method="POST" action="/submit" class="space-y-6">
       <input type="hidden" name="course_id" value="${course_id}" />
       <input type="hidden" name="semester_id" value="${semester_id}" />
       <input type="hidden" name="school_year_id" value="${school_year_id}" />
@@ -712,10 +720,12 @@ app.get('/', (req, res) => {
       <div class="space-y-4">
         <h2 class="text-xl font-semibold">Identificação do inquérito</h2>
   
+        <!-- Disciplina -->
         <div class="grid grid-cols-12 items-center gap-3">
-          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Disciplina</label>
+          <label for="discipline_id" class="col-span-12 sm:col-span-4 text-sm font-semibold text-slate-800">Disciplina</label>
           <div class="col-span-12 sm:col-span-8">
-            <select name="discipline_id" required class="w-full border rounded-xl p-2">
+            <select id="discipline_id" name="discipline_id" required
+                    class="w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300">
               <option value="">— seleccione —</option>
               ${disciplines.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}
             </select>
@@ -723,32 +733,41 @@ app.get('/', (req, res) => {
           </div>
         </div>
   
+        <!-- Docente -->
         <div class="grid grid-cols-12 items-center gap-3">
-          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Docente</label>
+          <label for="teacher_id" class="col-span-12 sm:col-span-4 text-sm font-semibold text-slate-800">Docente</label>
           <div class="col-span-12 sm:col-span-8">
-            <select id="teacher_id" name="teacher_id" required class="w-full border rounded-xl p-2 opacity-50 cursor-not-allowed" disabled>
+            <select id="teacher_id" name="teacher_id" required
+                    class="w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 opacity-50 cursor-not-allowed"
+                    disabled>
               <option value="">— seleccione —</option>
             </select>
             <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="teacher_id">Seleccione o docente.</p>
           </div>
         </div>
   
+        <!-- Turno -->
         <div class="grid grid-cols-12 items-center gap-3">
-          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Turno</label>
+          <label for="turno" class="col-span-12 sm:col-span-4 text-sm font-semibold text-slate-800">Turno</label>
           <div class="col-span-12 sm:col-span-8">
-            <select id="turno" name="turno" required class="w-full border rounded-xl p-2">
-              <option value="">— seleccione —</option>
+            <select id="turno" name="turno" required
+                    class="w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300">
+              <option value="" disabled selected>— seleccione —</option>
               <option value="diurno">Diurno</option>
               <option value="pos">Pós-laboral</option>
             </select>
+            <p class="mt-1 text-xs text-slate-500">Escolha o turno para carregar as turmas disponíveis.</p>
             <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="turno">Seleccione o turno.</p>
           </div>
         </div>
   
+        <!-- Turma -->
         <div class="grid grid-cols-12 items-center gap-3">
-          <label class="col-span-12 sm:col-span-4 text-sm font-medium text-slate-700">Turma</label>
+          <label for="class_group_id" class="col-span-12 sm:col-span-4 text-sm font-semibold text-slate-800">Turma</label>
           <div class="col-span-12 sm:col-span-8">
-            <select id="class_group_id" name="class_group_id" required class="w-full border rounded-xl p-2 opacity-50 cursor-not-allowed" disabled>
+            <select id="class_group_id" name="class_group_id" required
+                    class="w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 opacity-50 cursor-not-allowed"
+                    disabled>
               <option value="">— seleccione —</option>
             </select>
             <p class="mt-1 text-xs text-rose-600 hidden" data-error-for="class_group_id">Seleccione a turma.</p>
@@ -778,8 +797,8 @@ app.get('/', (req, res) => {
       </div>
   
       <div>
-        <label class="block mb-2 font-medium">Comentários (opcional)</label>
-        <textarea name="comment" class="w-full border rounded-xl p-3" rows="4" placeholder="Sugestões, críticas construtivas, elogios..."></textarea>
+        <label for="comment" class="block mb-2 font-semibold text-slate-800">Comentários (opcional)</label>
+        <textarea id="comment" name="comment" class="w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300" rows="4" placeholder="Sugestões, críticas construtivas, elogios..."></textarea>
         <p class="text-xs text-slate-500 mt-1">Evite incluir nomes ou dados pessoais.</p>
       </div>
   
@@ -791,33 +810,66 @@ app.get('/', (req, res) => {
   
     <script>
       (function(){
-        // preencher docentes conforme disciplina
+        // ===== Preenchimento de docentes por disciplina =====
         const TEACHER_MAP = ${JSON.stringify(teacherMap)};
-        const disc = document.querySelector('select[name="discipline_id"]');
-        const teacher = document.getElementById('teacher_id');
+        const $disc = document.getElementById('discipline_id');
+        const $teacher = document.getElementById('teacher_id');
+  
         function fillTeachers(list){
-          teacher.innerHTML = '<option value="">— seleccione —</option>';
+          $teacher.innerHTML = '<option value="">— seleccione —</option>';
           (list||[]).forEach(t => {
             const opt = document.createElement('option');
             opt.value = t.id; opt.textContent = t.name;
-            teacher.appendChild(opt);
+            $teacher.appendChild(opt);
           });
           const dis = !(list && list.length);
-          teacher.disabled = dis;
-          teacher.classList.toggle('opacity-50', dis);
-          teacher.classList.toggle('cursor-not-allowed', dis);
+          $teacher.disabled = dis;
+          $teacher.classList.toggle('opacity-50', dis);
+          $teacher.classList.toggle('cursor-not-allowed', dis);
+          if (!dis && list.length === 1) $teacher.value = String(list[0].id);
         }
-        disc.addEventListener('change', e => fillTeachers(TEACHER_MAP[e.target.value]||[]));
   
-        // preencher turmas conforme turno
-        const TURMA_A = db.prepare("SELECT id FROM class_group WHERE name='Turma A'").get()?.id || null;
-        const TURMA_B = db.prepare("SELECT id FROM class_group WHERE name='Turma B'").get()?.id || null;
-        const POS_UNI = db.prepare("SELECT id FROM class_group WHERE name='Única Pós-laboral'").get()?.id || null;
+        $disc.addEventListener('change', e => fillTeachers(TEACHER_MAP[e.target.value]||[]));
+  
+        // ===== Preenchimento de turmas por turno (sem db no cliente) =====
+        const TURMA_A        = ${turmaA ? turmaA.id : 'null'};
+        const TURMA_B        = ${turmaB ? turmaB.id : 'null'};
+        const POS_UNICA      = ${posUnica ? posUnica.id : 'null'};
+        const TURMA_A_NAME   = ${JSON.stringify(turmaA ? turmaA.name : 'Turma A')};
+        const TURMA_B_NAME   = ${JSON.stringify(turmaB ? turmaB.name : 'Turma B')};
+        const POS_UNICA_NAME = ${JSON.stringify(posUnica ? posUnica.name : 'Única Pós-laboral')};
+  
+        const $turno = document.getElementById('turno');
+        const $turma = document.getElementById('class_group_id');
+  
+        const diurno = [TURMA_A ? {id:TURMA_A, name:TURMA_A_NAME} : null,
+                        TURMA_B ? {id:TURMA_B, name:TURMA_B_NAME} : null].filter(Boolean);
+        const pos    = [POS_UNICA ? {id:POS_UNICA, name:POS_UNICA_NAME} : null].filter(Boolean);
+  
+        function fillTurmas(list){
+          $turma.innerHTML = '<option value="">— seleccione —</option>';
+          (list || []).forEach(o => {
+            const opt = document.createElement('option');
+            opt.value = o.id; opt.textContent = o.name;
+            $turma.appendChild(opt);
+          });
+          const disabled = !(list && list.length);
+          $turma.disabled = disabled;
+          $turma.classList.toggle('opacity-50', disabled);
+          $turma.classList.toggle('cursor-not-allowed', disabled);
+          if (!disabled && list.length === 1) $turma.value = String(list[0].id);
+        }
+  
+        $turno.addEventListener('change', (e) => {
+          if (e.target.value === 'diurno') fillTurmas(diurno);
+          else if (e.target.value === 'pos') fillTurmas(pos);
+          else fillTurmas([]);
+        });
       })();
     </script>
   
     <script>
-      // Validação simples
+      // ===== Validação simples + foco no primeiro inválido =====
       (function(){
         const form = document.getElementById('formSurvey');
         function err(name, show, msg){
@@ -829,13 +881,15 @@ app.get('/', (req, res) => {
         form.addEventListener('submit', (e)=>{
           const required = ['discipline_id','teacher_id','turno','class_group_id'];
           let first = null;
-          required.forEach(n=>{
+          for (const n of required){
             const f = form.querySelector('[name="'+n+'"]');
             if (f && !f.value){
               err(n, true);
               if (!first) first = f;
-            } else err(n, false);
-          });
+            } else {
+              err(n, false);
+            }
+          }
           if (first){ e.preventDefault(); first.focus(); }
         });
       })();
