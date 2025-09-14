@@ -116,7 +116,7 @@ function seedOnce() {
   const insCourse = db.prepare('INSERT INTO course (name) VALUES (?)');
   courses.forEach(c => insCourse.run(c));
 
-  const semesters = ['1º Semestre', '2º Semestre', 'Anual'];
+  const semesters = ['1º Semestre', '2º Semestre',];
   const insSem = db.prepare('INSERT INTO semester (name) VALUES (?)');
   semesters.forEach(s => insSem.run(s));
 
@@ -1083,34 +1083,40 @@ app.get('/api/stats', requireAuth, (req, res) => {
   res.json({ rows, questions, comments });
 });
 
-// ===== API: Disciplinas por Curso =====
-app.get('/api/disciplinas', requireAuth, (req, res) => {
-    const { course_id } = req.query;
-    if (!course_id) return res.json({ items: [] });
-    const items = db.prepare(
-      'SELECT id, name FROM discipline WHERE course_id = ? ORDER BY name'
-    ).all(course_id);
-    res.json({ items });
+// GET /api/disciplinas?course_id=&semester_id=&school_year_id=
+app.get('/api/disciplinas', (req, res) => {
+    const { course_id, semester_id, school_year_id } = req.query;
+    const rows = db.prepare(`
+      SELECT DISTINCT d.id, d.name
+      FROM teaching t
+      JOIN discipline d ON d.id = t.discipline_id
+      WHERE 1=1
+        ${course_id      ? 'AND d.course_id = @course_id'          : ''}
+        ${semester_id    ? 'AND t.semester_id = @semester_id'      : ''}
+        ${school_year_id ? 'AND t.school_year_id = @school_year_id': ''}
+      ORDER BY d.name
+    `).all({ course_id, semester_id, school_year_id });
+    res.json({ items: rows });
   });
   
-  // ===== API: Docentes por Disciplina (a partir de teaching) =====
-  app.get('/api/docentes', requireAuth, (req, res) => {
-    const { discipline_id } = req.query;
-    if (!discipline_id) return res.json({ items: [] });
-    const items = db.prepare(`
+  // GET /api/docentes?discipline_id=&semester_id=&school_year_id=
+  app.get('/api/docentes', (req, res) => {
+    const { discipline_id, semester_id, school_year_id } = req.query;
+    const rows = db.prepare(`
       SELECT DISTINCT te.id, te.name
       FROM teaching t
       JOIN teacher te ON te.id = t.teacher_id
-      WHERE t.discipline_id = ?
+      WHERE 1=1
+        ${discipline_id  ? 'AND t.discipline_id = @discipline_id'  : ''}
+        ${semester_id    ? 'AND t.semester_id = @semester_id'      : ''}
+        ${school_year_id ? 'AND t.school_year_id = @school_year_id': ''}
       ORDER BY te.name
-    `).all(discipline_id);
-    res.json({ items });
+    `).all({ discipline_id, semester_id, school_year_id });
+    res.json({ items: rows });
   });
-
+  
   // ====== RELATÓRIO (UI) – Curso -> Disciplina -> Docente (via APIs) ======
-
-  // ====== RELATÓRIO (UI) – Curso -> Disciplina -> Docente (via APIs) ======
-app.get('/admin', requireAuth, (req, res) => {
+  app.get('/admin', requireAuth, (req, res) => {
     const courses   = db.prepare('SELECT id, name FROM course ORDER BY name').all();
     const semesters = db.prepare('SELECT id, name FROM semester ORDER BY id').all();
     const years     = db.prepare('SELECT id, name FROM school_year ORDER BY name DESC').all();
@@ -1189,57 +1195,133 @@ app.get('/admin', requireAuth, (req, res) => {
       </div>
   
       <script>
-        // ===== Encadeamento: Curso -> Disciplina -> Docente =====
-        (function cascadeFilters(){
-          const form = document.getElementById('filtros');
-          const selCourse = form.querySelector('select[name="course_id"]');
-          const selDisc   = form.querySelector('select[name="discipline_id"]');
-          const selTeach  = form.querySelector('select[name="teacher_id"]');
-  
-          const setDisabled = (el, dis) => {
-            el.disabled = dis;
-            el.classList.toggle('opacity-50', dis);
-            el.classList.toggle('cursor-not-allowed', dis);
-          };
-          const resetToSelect = (el) => { el.innerHTML = '<option value="">— seleccione —</option>'; };
-  
-          async function loadDisciplinas(courseId){
-            resetToSelect(selDisc); setDisabled(selDisc, true);
-            resetToSelect(selTeach); setDisabled(selTeach, true);
-            if(!courseId) return;
-            const r = await fetch('/api/disciplinas?course_id=' + encodeURIComponent(courseId));
-            const data = await r.json();
-            const items = data.items || [];
-            if (!items.length) return;
-            selDisc.innerHTML = '<option value="">— Todos —</option>' + items.map(i => '<option value="'+i.id+'">'+i.name+'</option>').join('');
-            setDisabled(selDisc, false);
-            if (items.length === 1) selDisc.value = String(items[0].id);
-          }
-  
-          async function loadDocentes(discId){
-            resetToSelect(selTeach); setDisabled(selTeach, true);
-            if(!discId) return;
-            const r = await fetch('/api/docentes?discipline_id=' + encodeURIComponent(discId));
-            const data = await r.json();
-            const items = (data.items || []);
-            if (!items.length) return;
-            selTeach.innerHTML = '<option value="">— Todos —</option>' + items.map(i => '<option value="'+i.id+'">'+i.name+'</option>').join('');
-            setDisabled(selTeach, false);
-            if (items.length === 1) selTeach.value = String(items[0].id);
-          }
-  
-          selCourse.addEventListener('change', e => {
-            const cid = e.target.value;
-            loadDisciplinas(cid);
-            resetToSelect(selTeach); setDisabled(selTeach, true);
-          });
-          selDisc.addEventListener('change', e => loadDocentes(e.target.value));
-  
-          if (selCourse.value) loadDisciplinas(selCourse.value).then(()=> {
-            if (selDisc.value) loadDocentes(selDisc.value);
-          });
-        })();
-  
+        // ===== Encadeamento: Curso + Semestre (+ Ano) -> Disciplina -> Docente =====
+          (function cascadeFilters(){
+  const form      = document.getElementById('filtros');
+  const selCourse = form.querySelector('select[name="course_id"]');
+  const selSem    = form.querySelector('select[name="semester_id"]');
+  const selYear   = form.querySelector('select[name="school_year_id"]');
+  const selDisc   = form.querySelector('select[name="discipline_id"]');
+  const selTeach  = form.querySelector('select[name="teacher_id"]');
+
+  const setDisabled = (el, dis) => {
+    el.disabled = dis;
+    el.classList.toggle('opacity-50', dis);
+    el.classList.toggle('cursor-not-allowed', dis);
+  };
+  const resetToSelect = (el, txt='— seleccione —') => {
+    el.innerHTML = '<option value="">' + txt + '</option>';
+  };
+
+  async function loadDisciplinas({ preserve=false } = {}){
+    const prevDisc = selDisc.value;
+
+    // deixe o valor atual enquanto carrega
+    setDisabled(selDisc, true);
+    setDisabled(selTeach, true);
+    resetToSelect(selTeach);
+
+    const course_id      = selCourse.value;
+    const semester_id    = selSem.value;
+    const school_year_id = selYear.value;
+
+    if(!course_id || !semester_id){
+      resetToSelect(selDisc);
+      return { kept:false };
+    }
+
+    const qs = new URLSearchParams({ course_id, semester_id });
+    if (school_year_id) qs.append('school_year_id', school_year_id);
+
+    const r = await fetch('/api/disciplinas?' + qs.toString());
+    const data = await r.json();
+    const items = data.items || [];
+
+    if (!items.length){
+      resetToSelect(selDisc);
+      return { kept:false };
+    }
+
+    selDisc.innerHTML = '<option value="">— Todos —</option>' +
+      items.map(i => '<option value="'+i.id+'">'+i.name+'</option>').join('');
+
+    const ids = items.map(i => String(i.id));
+    let kept = false;
+
+    if (preserve && prevDisc && ids.includes(String(prevDisc))){
+      selDisc.value = String(prevDisc);
+      kept = true;
+    } else if (items.length === 1){
+      selDisc.value = String(items[0].id);
+    }
+
+    setDisabled(selDisc, false);
+    return { kept };
+  }
+
+  async function loadDocentes({ preserve=false } = {}){
+    const prevTeach = selTeach.value;
+
+    const discipline_id  = selDisc.value;
+    const semester_id    = selSem.value;
+    const school_year_id = selYear.value;
+
+    resetToSelect(selTeach);
+    setDisabled(selTeach, true);
+
+    if(!discipline_id || !semester_id) return { kept:false };
+
+    const qs = new URLSearchParams({ discipline_id, semester_id });
+    if (school_year_id) qs.append('school_year_id', school_year_id);
+
+    const r = await fetch('/api/docentes?' + qs.toString());
+    const data = await r.json();
+    const items = (data.items || []);
+
+    if (!items.length) return { kept:false };
+
+    selTeach.innerHTML = '<option value="">— Todos —</option>' +
+      items.map(i => '<option value="'+i.id+'">'+i.name+'</option>').join('');
+
+    const ids = items.map(i => String(i.id));
+    let kept = false;
+
+    if (preserve && prevTeach && ids.includes(String(prevTeach))){
+      selTeach.value = String(prevTeach);
+      kept = true;
+    } else if (items.length === 1){
+      selTeach.value = String(items[0].id);
+    }
+
+    setDisabled(selTeach, false);
+    return { kept };
+  }
+
+  // Eventos — Curso/Semestre mudam a oferta, então não preservamos por padrão
+  selCourse.addEventListener('change', async () => {
+    const { kept } = await loadDisciplinas({ preserve:false });
+    await loadDocentes({ preserve:false && kept });
+  });
+
+  selSem.addEventListener('change', async () => {
+    const { kept } = await loadDisciplinas({ preserve:false });
+    await loadDocentes({ preserve:false && kept });
+  });
+
+  // Ano lectivo: tentar manter o que o utilizador já escolheu
+  selYear.addEventListener('change', async () => {
+    const { kept } = await loadDisciplinas({ preserve:true });
+    await loadDocentes({ preserve: kept });
+  });
+
+  // Inicialização (se o navegador preencheu algo)
+  (async function init(){
+    if (selCourse.value && selSem.value) {
+      const { kept } = await loadDisciplinas({ preserve:true });
+      await loadDocentes({ preserve: kept });
+    }
+  })();
+})();
         // ===== Utils & estado =====
         const round2 = x => Math.round(Number(x || 0) * 100) / 100;
         function params(){
@@ -1256,12 +1338,11 @@ app.get('/admin', requireAuth, (req, res) => {
         }
   
         // ===== Comentários: palavras-chave e paginação =====
-        let modeKW = true;
         let page = 1;
         const PAGE_SIZE = 20;
         const STOP = new Set(['a','o','os','as','de','da','do','das','dos','e','é','em','no','na','nos','nas','um','uma','que','com','por','para','ao','à','às','aos','se','sem','são','ser','foi','era','eram','já','sua','seu','suas','seus','mais','menos','muito','muita','muitos','muitas','também','como']);
   
-        function extractKeywords(comments, topK=30){
+        function extractKeywords(comments, topK=40){
           const freq = new Map();
           (comments||[]).forEach(c=>{
             const txt = String(c.comment||'').toLowerCase()
@@ -1323,6 +1404,7 @@ app.get('/admin', requireAuth, (req, res) => {
         async function load(){
           const res = await fetch('/api/stats?' + params());
           const data = await res.json();
+  
           if (data.insufficient){
             const ctx1 = document.getElementById('chartPerguntas').getContext('2d');
             const ctx2 = document.getElementById('chartAreas').getContext('2d');
@@ -1331,30 +1413,48 @@ app.get('/admin', requireAuth, (req, res) => {
             document.getElementById('comments').innerHTML = '<li class="text-slate-500">'+msg+'</li>';
             return;
           }
+  
           const map = new Map((data.rows||[]).map(r=>[r.question_id, Number(r.avg_val)]));
           const labels = (data.questions||[]).map(q=>q.code);
           const values = (data.questions||[]).map(q=>{const v=map.get(q.id);return Number.isFinite(v)?round2(v):null;});
+  
           const ctx1 = document.getElementById('chartPerguntas').getContext('2d');
           if(chartPerguntas) chartPerguntas.destroy();
           if(values.every(v => v===null)) renderNoData(ctx1);
-          else chartPerguntas = new Chart(ctx1,{type:'bar',data:{labels,datasets:[{label:'Média (0–2)',data:values.map(v=>v??0)}]},options:{responsive:true,maintainAspectRatio:false}});
-          const areaAgg={}; (data.questions||[]).forEach((q,i)=>{const v=values[i];if(v==null)return;(areaAgg[q.area]||={sum:0,n:0}).sum+=v;(areaAgg[q.area].n++);});
-          const areaLabels=Object.keys(areaAgg), areaVals=areaLabels.map(a=>round2(areaAgg[a].sum/areaAgg[a].n));
+          else chartPerguntas = new Chart(ctx1,{
+            type:'bar',
+            data:{labels,datasets:[{label:'Média (0–2)',data:values.map(v=>v??0)}]},
+            options:{responsive:true,maintainAspectRatio:false}
+          });
+  
+          const areaAgg={};
+          (data.questions||[]).forEach((q,i)=>{
+            const v=values[i]; if(v==null) return;
+            (areaAgg[q.area] ||= {sum:0,n:0});
+            areaAgg[q.area].sum += v; areaAgg[q.area].n++;
+          });
+          const areaLabels=Object.keys(areaAgg);
+          const areaVals=areaLabels.map(a=>round2(areaAgg[a].sum/areaAgg[a].n));
+  
           const ctx2=document.getElementById('chartAreas').getContext('2d');
           if(chartAreas) chartAreas.destroy();
-          if(!areaVals.length) renderNoData(ctx2); else chartAreas=new Chart(ctx2,{type:'radar',data:{labels:areaLabels,datasets:[{label:'Média por Área (0–2)',data:areaVals}]}});
+          if(!areaVals.length) renderNoData(ctx2);
+          else chartAreas=new Chart(ctx2,{type:'radar',data:{labels:areaLabels,datasets:[{label:'Média por Área (0–2)',data:areaVals}]}});
+  
           const totalC=(data.comments||[]).length;
-          modeKW=totalC>20;
-          if(modeKW) renderKeywordsFrom(data); else renderCommentsList(data);
+          if(totalC>20) renderKeywordsFrom(data); else renderCommentsList(data);
         }
+  
         document.getElementById('aplicar').addEventListener('click', load);
         load();
         document.getElementById('exportExcel').addEventListener('click',e=>{e.preventDefault();window.location='/export/excel?'+params();});
         document.getElementById('exportPDF').addEventListener('click',e=>{e.preventDefault();window.location='/export/pdf?'+params();});
       </script>`;
   
-    res.send(renderPage('Relatório', content, '', (req.cookies && req.cookies.ispt_admin==='1')));
+    // IMPORTANTE: passa o papel (role) OU o flag antigo de admin
+    res.send(renderPage('Relatório', content, '', req.cookies?.role || (req.cookies?.ispt_admin==='1')));
   });
+  
   
 
 // === Helpers de Backup (coloque acima das rotas) ===
